@@ -167,29 +167,53 @@ pub async fn reset_onboarding_status_cmd<R: Runtime>(
         .map_err(|e| format!("Failed to reset onboarding status: {}", e))
 }
 
+/// Complete onboarding. `parakeet_status` / `summary_status` are
+/// "downloaded" | "downloading" | "skipped" as chosen by the user; when the
+/// summary model was skipped, summaries go through the local CLI agent.
 #[tauri::command]
 pub async fn complete_onboarding<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     model: String,
+    parakeet_status: Option<String>,
+    summary_status: Option<String>,
+    summary_provider: Option<String>,
 ) -> Result<(), String> {
-    info!("Completing onboarding with builtin-ai model: {}", model);
+    let parakeet_status = parakeet_status.unwrap_or_else(|| "downloaded".to_string());
+    let summary_status = summary_status.unwrap_or_else(|| "downloaded".to_string());
+    let summary_provider = summary_provider.unwrap_or_else(|| "builtin-ai".to_string());
+    info!(
+        "Completing onboarding: provider={}, model={}, parakeet={}, summary={}",
+        summary_provider, model, parakeet_status, summary_status
+    );
 
-    // Step 1: Save model configuration to SQLite database FIRST
     let pool = state.db_manager.pool();
 
-    // Onboarding always uses builtin-ai (local LLM)
+    let saved_model = if summary_provider == "cli-agent" {
+        let config = match crate::summary::cli_agent::load_config(&app).await? {
+            Some(config) => config,
+            None => {
+                let config = crate::smart::commands::default_cli_chain().remove(0);
+                crate::summary::cli_agent::save_config(&app, &config).await?;
+                config
+            }
+        };
+        config.display_name()
+    } else {
+        model.clone()
+    };
+
     if let Err(e) = SettingsRepository::save_model_config(
         pool,
-        "builtin-ai",
-        &model,
+        &summary_provider,
+        &saved_model,
         "large-v3",
         None,
     ).await {
-        error!("Failed to save builtin-ai model config: {}", e);
-        return Err(format!("Failed to save builtin-ai model config: {}", e));
+        error!("Failed to save summary model config: {}", e);
+        return Err(format!("Failed to save summary model config: {}", e));
     }
-    info!("Saved builtin-ai model config: model={}", model);
+    info!("Saved summary model config: provider={}, model={}", summary_provider, saved_model);
 
     // Save transcription model config (parakeet provider) - always parakeet
     if let Err(e) = SettingsRepository::save_transcript_config(
@@ -202,22 +226,23 @@ pub async fn complete_onboarding<R: Runtime>(
     }
     info!("Saved transcription model config: provider=parakeet, model={}", crate::config::DEFAULT_PARAKEET_MODEL);
 
-    // Step 2: Only NOW mark onboarding as complete (after DB operations succeed)
+    // Only NOW mark onboarding as complete (after DB operations succeed)
     let mut status = load_onboarding_status(&app)
         .await
         .map_err(|e| format!("Failed to load onboarding status: {}", e))?;
 
     status.completed = true;
     status.current_step = 4; // Max step (4 on macOS with permissions, 3 on other platforms)
-    status.model_status.parakeet = "downloaded".to_string();
-    status.model_status.summary = "downloaded".to_string();
-    status.model_status.selected_summary_model = Some(model.clone());
+    status.model_status.parakeet = parakeet_status;
+    status.model_status.summary = summary_status;
+    status.model_status.selected_summary_model =
+        (summary_provider == "builtin-ai").then(|| model.clone());
 
     save_onboarding_status(&app, &status)
         .await
         .map_err(|e| format!("Failed to save completed onboarding status: {}", e))?;
 
-    info!("Onboarding completed successfully with model: {}", model);
+    info!("Onboarding completed successfully");
     Ok(())
 }
 

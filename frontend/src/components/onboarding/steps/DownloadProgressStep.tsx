@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getSummaryModelSizeLabel, getSummaryModelSizeMb } from '@/lib/onboarding-summary-model';
 import type { ParakeetDownloadProgressEvent } from '@/lib/parakeet';
+import { canContinue } from '@/lib/onboarding-downloads';
 
 const PARAKEET_MODEL = 'parakeet-tdt-0.6b-v3-int8';
 
@@ -34,7 +35,10 @@ export function DownloadProgressStep() {
     setSummaryModelDownloaded,
     startBackgroundDownloads,
     completeOnboarding,
+    downloadSelection,
+    setDownloadSelection,
   } = useOnboarding();
+  const [downloadsStarted, setDownloadsStarted] = useState(false);
 
   const [isMac, setIsMac] = useState(false);
 
@@ -165,34 +169,22 @@ export function DownloadProgressStep() {
     checkPlatform();
   }, []);
 
-  // Start the required transcription model immediately; summary readiness must not block it.
-  useEffect(() => {
-    if (parakeetDownloadStartedRef.current) return;
-    parakeetDownloadStartedRef.current = true;
-
-    if (!parakeetDownloaded) {
+  // Downloads are optional: nothing starts until the user confirms the selection.
+  const startSelectedDownloads = async () => {
+    setDownloadsStarted(true);
+    if (downloadSelection.parakeet && !parakeetDownloaded && !parakeetDownloadStartedRef.current) {
+      parakeetDownloadStartedRef.current = true;
       setParakeetState((prev) => ({ ...prev, status: 'downloading' }));
-    }
-
-    startBackgroundDownloads({
-      includeParakeet: true,
-      includeSummary: false,
-    }).catch((error) => {
-      console.error('Failed to start Parakeet download:', error);
-      if (!parakeetDownloaded) {
+      startBackgroundDownloads({ includeParakeet: true, includeSummary: false }).catch((error) => {
+        console.error('Failed to start Parakeet download:', error);
         setParakeetState((prev) => ({ ...prev, status: 'error', error: String(error) }));
-      }
-    });
-  }, []);
-
-  // Start the selected summary model only after the backend recommendation is known.
-  useEffect(() => {
-    if (summaryDownloadStartedRef.current) return;
-    if (!selectedSummaryModel) return;
-    summaryDownloadStartedRef.current = true;
-
-    startSummaryDownload();
-  }, [selectedSummaryModel]);
+      });
+    }
+    if (downloadSelection.summary && !summaryDownloadStartedRef.current && selectedSummaryModel) {
+      summaryDownloadStartedRef.current = true;
+      startSummaryDownload();
+    }
+  };
 
   // Listen to Parakeet download progress
   useEffect(() => {
@@ -339,7 +331,7 @@ export function DownloadProgressStep() {
 
   const handleContinue = async () => {
     // Verify actual model availability (catches state drift)
-    try {
+    if (downloadSelection.parakeet) try {
       await invoke('parakeet_init');
       const actuallyAvailable = await invoke<boolean>('parakeet_has_available_models');
 
@@ -365,13 +357,14 @@ export function DownloadProgressStep() {
     }
 
     // Check if downloads are complete for toast notification
-    const downloadsComplete = parakeetState.status === 'completed' &&
-      summaryState.status === 'completed';
+    const downloadsComplete =
+      (!downloadSelection.parakeet || parakeetState.status === 'completed') &&
+      (!downloadSelection.summary || summaryState.status === 'completed');
 
     // Show toast if downloads still in progress
     if (!downloadsComplete) {
       toast.info('Downloads will continue in the background', {
-        description: 'You can start using the app. Recording will be available once speech recognition is ready.',
+        description: 'You can start using the app. Models can also be downloaded later in Settings.',
         duration: 5000,
       });
     }
@@ -404,22 +397,36 @@ export function DownloadProgressStep() {
     icon: React.ReactNode,
     state: DownloadState,
     modelSize: string,
-    sizeUnit = 'MB'
+    sizeUnit = 'MB',
+    selection?: { checked: boolean; onChange: (checked: boolean) => void; hint: string }
   ) => (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
+    <div className={`bg-white rounded-xl border border-gray-200 p-5 ${selection && !selection.checked ? 'opacity-70' : ''}`}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
+          {selection && (
+            <input
+              type="checkbox"
+              aria-label={`Download ${title}`}
+              className="w-4 h-4 accent-gray-900"
+              checked={selection.checked}
+              disabled={downloadsStarted || state.status === 'completed'}
+              onChange={(e) => selection.onChange(e.target.checked)}
+            />
+          )}
           <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center">
             {icon}
           </div>
           <div>
             <h3 className="font-medium text-gray-900">{title}</h3>
             <p className="text-sm text-gray-500">{modelSize}</p>
+            {selection && <p className="text-xs text-gray-400 mt-0.5">{selection.hint}</p>}
           </div>
         </div>
         <div>
           {state.status === 'waiting' && (
-            <span className="text-sm text-gray-500">Waiting...</span>
+            <span className="text-sm text-gray-500">
+              {selection && !selection.checked ? 'Skipped' : downloadsStarted ? 'Waiting...' : ''}
+            </span>
           )}
           {state.status === 'downloading' && (
             <Loader2 className="w-5 h-5 text-gray-700 animate-spin" />
@@ -491,7 +498,7 @@ export function DownloadProgressStep() {
   return (
     <OnboardingContainer
       title="Getting things ready"
-      description="You can start using Meetily after downloading the Transcription Engine."
+      description="Choose what to download now. Everything is optional and can be downloaded later in Settings."
       step={3}
       totalSteps={isMac ? 4 : 3}
     >
@@ -502,7 +509,13 @@ export function DownloadProgressStep() {
             'Transcription Engine',
             <Mic className="w-5 h-5 text-gray-600" />,
             parakeetState,
-            '~670 MB'
+            '~670 MB',
+            'MB',
+            {
+              checked: downloadSelection.parakeet || parakeetState.status === 'completed',
+              onChange: (checked) => setDownloadSelection({ ...downloadSelection, parakeet: checked }),
+              hint: 'Local speech recognition (Parakeet). Needed to transcribe recordings.',
+            }
           )}
 
           {renderDownloadCard(
@@ -510,13 +523,18 @@ export function DownloadProgressStep() {
             <Sparkles className="w-5 h-5 text-gray-600" />,
             summaryState,
             getSummaryModelSizeLabel(selectedSummaryModel || recommendedSummaryModel),
-            'MiB'
+            'MiB',
+            {
+              checked: downloadSelection.summary || summaryState.status === 'completed',
+              onChange: (checked) => setDownloadSelection({ ...downloadSelection, summary: checked }),
+              hint: 'Optional local LLM. If skipped, summaries use your local CLI agent (Codex / Claude Code).',
+            }
           )}
         </div>
 
         {/* Info Message - Only show when Parakeet is downloaded */}
         <AnimatePresence>
-          {parakeetDownloaded && !summaryModelDownloaded && (
+          {downloadsStarted && downloadSelection.summary && parakeetDownloaded && !summaryModelDownloaded && (
             <motion.div
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
@@ -539,17 +557,40 @@ export function DownloadProgressStep() {
 
         {/* Continue Button */}
         <div className="w-full max-w-xs">
-          <Button
-            onClick={handleContinue}
-            disabled={!parakeetDownloaded || isCompleting}
-            className="w-full h-11 bg-gray-900 hover:bg-gray-800 text-white disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {(isCompleting || !parakeetDownloaded) ? (
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            ) : (
-              'Continue'
-            )}
-          </Button>
+          {(() => {
+            const pendingSelection =
+              (downloadSelection.parakeet && !parakeetDownloaded) ||
+              (downloadSelection.summary && !summaryModelDownloaded);
+            if (!downloadsStarted && pendingSelection) {
+              return (
+                <Button
+                  onClick={startSelectedDownloads}
+                  className="w-full h-11 bg-gray-900 hover:bg-gray-800 text-white"
+                >
+                  Download selected
+                </Button>
+              );
+            }
+            const ready = canContinue(downloadSelection, {
+              parakeetDownloaded,
+              summaryDownloaded: summaryModelDownloaded,
+            });
+            return (
+              <Button
+                onClick={handleContinue}
+                disabled={!ready || isCompleting}
+                className="w-full h-11 bg-gray-900 hover:bg-gray-800 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {(isCompleting || !ready) ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : downloadSelection.parakeet || downloadSelection.summary ? (
+                  'Continue'
+                ) : (
+                  'Continue without downloading'
+                )}
+              </Button>
+            );
+          })()}
         </div>
       </div>
     </OnboardingContainer>

@@ -4,7 +4,8 @@ import { Transcript, TranscriptSegmentData } from '@/types';
 import { TranscriptView } from '@/components/TranscriptView';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
-import { useMemo } from 'react';
+import { SmartTranscriptBar } from './SmartTranscriptBar';
+import { useMemo, useState } from 'react';
 
 interface TranscriptPanelProps {
   transcripts: Transcript[];
@@ -49,20 +50,23 @@ export function TranscriptPanel({
   meetingFolderPath,
   onRefetchTranscripts,
 }: TranscriptPanelProps) {
+  const [showOriginal, setShowOriginal] = useState(false);
+  const [originalText, setOriginalText] = useState<Record<string, string>>({});
+
   // Convert transcripts to segments if pagination is not used but we want virtualization
   const convertedSegments = useMemo(() => {
-    if (usePagination && segments) {
-      return segments;
-    }
-    // Convert transcripts to segments for virtualization
-    return transcripts.map(t => ({
-      id: t.id,
-      timestamp: t.audio_start_time ?? 0,
-      endTime: t.audio_end_time,
-      text: t.text,
-      confidence: t.confidence,
-    }));
-  }, [transcripts, usePagination, segments]);
+    const base = usePagination && segments
+      ? segments
+      : transcripts.map(t => ({
+          id: t.id,
+          timestamp: t.audio_start_time ?? 0,
+          endTime: t.audio_end_time,
+          text: t.text,
+          confidence: t.confidence,
+        }));
+    if (!showOriginal) return base;
+    return base.map(s => (originalText[s.id] !== undefined ? { ...s, text: originalText[s.id] } : s));
+  }, [transcripts, usePagination, segments, showOriginal, originalText]);
 
   return (
     <div className="flex h-full min-w-0 w-full bg-white flex-col relative @container">
@@ -77,6 +81,16 @@ export function TranscriptPanel({
           onRefetchTranscripts={onRefetchTranscripts}
         />
       </div>
+
+      {meetingId && !isRecording && (
+        <SmartTranscriptBar
+          meetingId={meetingId}
+          showOriginal={showOriginal}
+          onShowOriginalChange={setShowOriginal}
+          onOriginalChange={setOriginalText}
+          onTranscriptChanged={onRefetchTranscripts}
+        />
+      )}
 
       {/* Transcript content - use virtualized view for better performance */}
       <div className="flex-1 overflow-hidden pb-4">

@@ -49,6 +49,7 @@ pub mod anthropic;
 pub mod groq;
 pub mod openrouter;
 pub mod parakeet_engine;
+pub mod smart;
 pub mod state;
 pub mod summary;
 pub mod tray;
@@ -744,6 +745,14 @@ pub fn run() {
             summary::cli_agent::api_get_cli_agent_config,
             summary::cli_agent::api_save_cli_agent_config,
             summary::cli_agent::api_test_cli_agent,
+            smart::commands::api_glossary_list,
+            smart::commands::api_glossary_add,
+            smart::commands::api_glossary_delete,
+            smart::commands::api_glossary_seed_from_obsidian,
+            smart::commands::api_glossary_pick_vault,
+            smart::commands::api_smart_get_transcript_versions,
+            smart::commands::api_smart_undo_corrections,
+            smart::commands::api_smart_process_meeting,
             // Summary commands
             summary::commands::api_process_transcript,
             summary::commands::api_get_summary,

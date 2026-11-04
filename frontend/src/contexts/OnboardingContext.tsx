@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { completionPlan, DEFAULT_DOWNLOAD_SELECTION, type DownloadSelection } from '@/lib/onboarding-downloads';
 import { listen } from '@tauri-apps/api/event';
 import type { PermissionStatus, OnboardingPermissions } from '@/types/onboarding';
 import { resolveOnboardingSummaryModelStatus } from '@/lib/onboarding-summary-model';
@@ -64,6 +65,9 @@ interface OnboardingContextType {
   completeOnboarding: () => Promise<void>;
   startBackgroundDownloads: (options: StartBackgroundDownloadsOptions) => Promise<void>;
   retryParakeetDownload: () => Promise<void>;
+  // Which models the user chose to download (all optional)
+  downloadSelection: DownloadSelection;
+  setDownloadSelection: (value: DownloadSelection) => void;
 }
 
 interface StartBackgroundDownloadsOptions {
@@ -97,6 +101,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   const [recommendedSummaryModel, setRecommendedSummaryModel] = useState<string>('');
   const [databaseExists, setDatabaseExists] = useState(false);
   const [isBackgroundDownloading, setIsBackgroundDownloading] = useState(false);
+  const [downloadSelection, setDownloadSelection] = useState<DownloadSelection>(DEFAULT_DOWNLOAD_SELECTION);
 
   // Permissions state
   const [permissions, setPermissions] = useState<OnboardingPermissions>({
@@ -485,18 +490,27 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         setSelectedSummaryModel(modelToSave);
       }
 
-      const selectedModelReady = await invoke<boolean>('builtin_ai_is_model_ready', {
-        modelName: modelToSave,
-        refresh: true,
-      });
-      setSummaryModelDownloaded(selectedModelReady);
-      if (!selectedModelReady) {
-        requestSummaryModelDownload(modelToSave);
+      let selectedModelReady = summaryModelDownloaded;
+      if (downloadSelection.summary) {
+        selectedModelReady = await invoke<boolean>('builtin_ai_is_model_ready', {
+          modelName: modelToSave,
+          refresh: true,
+        });
+        setSummaryModelDownloaded(selectedModelReady);
+        if (!selectedModelReady) {
+          requestSummaryModelDownload(modelToSave);
+        }
       }
 
-      // Onboarding always uses builtin-ai with selected model
+      const plan = completionPlan(downloadSelection, {
+        parakeetDownloaded,
+        summaryDownloaded: selectedModelReady,
+      });
       await invoke('complete_onboarding', {
         model: modelToSave,
+        parakeetStatus: plan.parakeet,
+        summaryStatus: plan.summary,
+        summaryProvider: plan.summaryProvider,
       });
       setCompleted(true);
       console.log('[OnboardingContext] Onboarding completed with model:', modelToSave);
@@ -636,6 +650,8 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         completeOnboarding,
         startBackgroundDownloads,
         retryParakeetDownload,
+        downloadSelection,
+        setDownloadSelection,
       }}
     >
       {children}

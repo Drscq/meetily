@@ -707,6 +707,18 @@ pub async fn generate_with_cli(
     Ok(outcome.text)
 }
 
+/// Run a single prompt through the CLI in `working_dir`, honouring the
+/// configured timeout. Used by the smart pipeline.
+pub async fn run_prompt(
+    config: &CliAgentConfig,
+    prompt: &str,
+    working_dir: &Path,
+) -> Result<String, String> {
+    run_once(config, prompt, working_dir, config.timeout(), None)
+        .await
+        .map(|outcome| outcome.text)
+}
+
 fn resolve_working_dir(config: &CliAgentConfig, app_data_dir: Option<&PathBuf>) -> PathBuf {
     if let Some(dir) = &config.working_dir {
         let path = expand_home(Path::new(dir));
