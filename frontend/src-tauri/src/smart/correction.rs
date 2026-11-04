@@ -90,7 +90,7 @@ struct RawTerm {
 }
 
 /// The outermost `{ ... }` in the model output (tolerates prose and fences).
-fn json_object(raw: &str) -> Option<&str> {
+pub(crate) fn json_object(raw: &str) -> Option<&str> {
     let start = raw.find('{')?;
     let end = raw.rfind('}')?;
     (end > start).then(|| &raw[start..=end])

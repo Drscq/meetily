@@ -3,6 +3,7 @@
 use super::cli_runner::CliFallbackRunner;
 use super::correction::{parse_correction_response, Segment};
 use super::glossary::{Glossary, GlossaryTerm};
+use super::organize::{meeting_placement, MeetingPlacement};
 use super::pipeline::{self, ModelRunner, ProcessingStatus};
 use super::transcript_versions::{self, Version};
 use crate::state::AppState;
@@ -13,6 +14,19 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 const SMART_TIMEOUT_SECS: u64 = 1200;
+const MAX_ATTEMPTS: i64 = 5;
+const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Meetings currently being processed, so overlapping triggers don't race.
+static IN_FLIGHT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+async fn save_root<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
+    crate::audio::recording_preferences::load_recording_preferences(app)
+        .await
+        .map(|p| p.save_folder)
+        .unwrap_or_else(|_| crate::audio::recording_preferences::get_default_recordings_folder())
+}
 const OBSIDIAN_DIGEST_MAX_BYTES: usize = 120_000;
 
 /// Codex (gpt-6.1-terra, high effort) first, Claude Code (Opus) as fallback.
@@ -67,8 +81,14 @@ pub async fn process_meeting<R: Runtime>(
             },
         );
     };
+    if !IN_FLIGHT.lock().unwrap().insert(meeting_id.to_string()) {
+        return Err("This meeting is already being processed".to_string());
+    }
     emit("processing", 0, None);
-    match pipeline::correct_meeting(pool, &runner(app), meeting_id).await {
+    let root = save_root(app).await;
+    let result = pipeline::process_meeting(pool, &runner(app), meeting_id, &root).await;
+    IN_FLIGHT.lock().unwrap().remove(meeting_id);
+    match result {
         Ok(outcome) => {
             log::info!(
                 "smart: meeting {} corrected {} segments, {} terms proposed",
@@ -84,6 +104,40 @@ pub async fn process_meeting<R: Runtime>(
             Err(e)
         }
     }
+}
+
+/// Retry pending meetings shortly after launch and then every 15 minutes
+/// (covers app restarts and network outages).
+pub fn spawn_retry_loop<R: Runtime>(app: AppHandle<R>) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        loop {
+            if let Some(state) = app.try_state::<AppState>() {
+                let pool = state.db_manager.pool().clone();
+                let root = save_root(&app).await;
+                match pipeline::retry_pending(&pool, &runner(&app), &root, MAX_ATTEMPTS).await {
+                    Ok(ids) if !ids.is_empty() => {
+                        log::info!("smart: retried {} pending meetings", ids.len());
+                        for id in ids {
+                            let status = pipeline::processing_status(&pool, &id).await.ok().flatten();
+                            let _ = app.emit(
+                                "smart-pipeline-status",
+                                SmartPipelineEvent {
+                                    meeting_id: id,
+                                    status: status.as_ref().map_or("pending".into(), |s| s.status.clone()),
+                                    segments_corrected: 0,
+                                    error: status.and_then(|s| s.error),
+                                },
+                            );
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::warn!("smart: retry failed: {}", e),
+                }
+            }
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
+    });
 }
 
 /// Fire-and-forget trigger used after a recording's transcript is saved.
@@ -118,6 +172,7 @@ pub struct TranscriptVersions {
     /// Segment id -> raw ASR text, only for corrected segments.
     pub original: std::collections::HashMap<String, String>,
     pub status: Option<ProcessingStatus>,
+    pub placement: Option<MeetingPlacement>,
 }
 
 #[tauri::command]
@@ -137,6 +192,7 @@ pub async fn api_smart_get_transcript_versions<R: Runtime>(
     Ok(TranscriptVersions {
         original,
         status: pipeline::processing_status(&pool, &meeting_id).await?,
+        placement: meeting_placement(&pool, &meeting_id).await.ok(),
     })
 }
 

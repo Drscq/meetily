@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Loader2, Sparkles, Undo2, Wand2 } from 'lucide-react';
+import { Folder, Loader2, Sparkles, Undo2, Wand2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface ProcessingStatus {
@@ -11,9 +11,17 @@ interface ProcessingStatus {
   error?: string | null;
 }
 
+interface MeetingPlacement {
+  title: string;
+  titleSource: string;
+  category: string | null;
+  folderPath: string | null;
+}
+
 interface TranscriptVersions {
   original: Record<string, string>;
   status: ProcessingStatus | null;
+  placement: MeetingPlacement | null;
 }
 
 interface SmartTranscriptBarProps {
@@ -63,7 +71,7 @@ export function SmartTranscriptBar({
     setBusy(true);
     try {
       const corrected = await invoke<number>('api_smart_process_meeting', { meetingId });
-      toast.success(corrected > 0 ? `Corrected ${corrected} segments` : 'No corrections needed');
+      toast.success(corrected > 0 ? `Corrected ${corrected} segments and filed the meeting` : 'Meeting processed');
     } catch (error) {
       toast.error('AI correction failed', { description: String(error) });
     } finally {
@@ -92,11 +100,11 @@ export function SmartTranscriptBar({
     <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 px-4 py-2 border-b border-gray-100 text-xs text-gray-600">
       {processing ? (
         <span className="flex items-center gap-1">
-          <Loader2 className="w-3 h-3 animate-spin" /> Correcting transcript with AI…
+          <Loader2 className="w-3 h-3 animate-spin" /> Correcting and filing with AI…
         </span>
       ) : status === 'pending' ? (
         <span className="text-amber-700" title={versions?.status?.error ?? ''}>
-          AI correction pending (will retry)
+          AI processing pending (retries automatically)
         </span>
       ) : correctedCount > 0 ? (
         <span className="flex items-center gap-1">
@@ -119,9 +127,15 @@ export function SmartTranscriptBar({
         </>
       )}
 
+      {!processing && versions?.placement?.category && (
+        <span className="flex items-center gap-1" title={versions.placement.folderPath ?? ''}>
+          <Folder className="w-3 h-3" /> {versions.placement.category}
+        </span>
+      )}
+
       {!processing && (
         <button className="flex items-center gap-1 hover:text-gray-900" onClick={processNow}>
-          <Wand2 className="w-3 h-3" /> {status ? 'Re-run correction' : 'Correct now'}
+          <Wand2 className="w-3 h-3" /> {status === 'pending' ? 'Process now' : status ? 'Re-run AI' : 'Process with AI'}
         </button>
       )}
     </div>

@@ -586,6 +586,9 @@ pub fn run() {
             })
             .expect("Failed to initialize database");
 
+            // Retry post-meeting processing that failed earlier (offline, quit, ...)
+            smart::commands::spawn_retry_loop(_app.handle().clone());
+
             // Initialize bundled templates directory for dynamic template discovery
             log::info!("Initializing bundled templates directory...");
             if let Ok(resource_path) = _app.handle().path().resource_dir() {

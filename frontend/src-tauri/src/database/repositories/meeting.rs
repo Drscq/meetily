@@ -182,7 +182,7 @@ impl MeetingsRepository {
         let now = Utc::now().naive_utc();
 
         let rows_affected =
-            sqlx::query("UPDATE meetings SET title = ?, updated_at = ? WHERE id = ?")
+            sqlx::query("UPDATE meetings SET title = ?, title_source = 'manual', updated_at = ? WHERE id = ?")
                 .bind(new_title)
                 .bind(now)
                 .bind(meeting_id)
@@ -196,6 +196,8 @@ impl MeetingsRepository {
         Ok(true)
     }
 
+    /// Rename from a generated summary heading. Only replaces titles that
+    /// were set automatically; manual and smart-pipeline titles are kept.
     pub async fn update_meeting_name(
         pool: &SqlitePool,
         meeting_id: &str,
@@ -206,7 +208,7 @@ impl MeetingsRepository {
 
         // Update meetings table
         let meeting_update =
-            sqlx::query("UPDATE meetings SET title = ?, updated_at = ? WHERE id = ?")
+            sqlx::query("UPDATE meetings SET title = ?, title_source = 'summary', updated_at = ? WHERE id = ? AND title_source IN ('auto', 'summary')")
                 .bind(new_title)
                 .bind(now)
                 .bind(meeting_id)
@@ -271,4 +273,33 @@ async fn delete_meeting_with_transaction(
         .await?;
 
     Ok(result.rows_affected() > 0)
+}
+
+#[cfg(test)]
+mod title_protection_tests {
+    use super::*;
+    use crate::smart::test_support::migrated_pool;
+
+    async fn meeting(pool: &SqlitePool, id: &str, title: &str) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, ?, '2026-11-04T12:00:00Z', '2026-11-04T12:00:00Z')")
+            .bind(id).bind(title).execute(pool).await.unwrap();
+    }
+
+    async fn title(pool: &SqlitePool, id: &str) -> String {
+        MeetingsRepository::get_meeting(pool, id).await.unwrap().unwrap().title
+    }
+
+    #[tokio::test]
+    async fn summary_rename_applies_to_auto_titles_only() {
+        let pool = migrated_pool().await;
+        meeting(&pool, "auto", "Meeting 04_11_26_07_07_22").await;
+        meeting(&pool, "manual", "Meeting 04_11_26_08_00_00").await;
+
+        MeetingsRepository::update_meeting_title(&pool, "manual", "Thang 1:1").await.unwrap();
+        MeetingsRepository::update_meeting_name(&pool, "auto", "Summary Title").await.unwrap();
+        MeetingsRepository::update_meeting_name(&pool, "manual", "Summary Title").await.unwrap();
+
+        assert_eq!(title(&pool, "auto").await, "Summary Title");
+        assert_eq!(title(&pool, "manual").await, "Thang 1:1");
+    }
 }

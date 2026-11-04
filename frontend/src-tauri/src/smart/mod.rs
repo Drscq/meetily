@@ -1,7 +1,9 @@
 //! Smart post-meeting pipeline: glossary learning, CLI-driven transcript
 //! correction, and (later) titling / classification.
 
+pub mod classify;
 pub mod cli_runner;
+pub mod organize;
 pub mod commands;
 pub mod correction;
 pub mod glossary;
