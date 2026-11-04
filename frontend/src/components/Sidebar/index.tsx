@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, PanelLeftClose, PanelLeftOpen, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
@@ -444,6 +444,16 @@ const Sidebar: React.FC = () => {
     };
   }, []);
 
+  const collapseToggle = (
+    <button
+      onClick={toggleCollapse}
+      title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors duration-150"
+    >
+      {isCollapsed ? <PanelLeftOpen className="w-5 h-5" /> : <PanelLeftClose className="w-5 h-5" />}
+    </button>
+  );
+
   const renderCollapsedIcons = () => {
     if (!isCollapsed) return null;
 
@@ -454,6 +464,7 @@ const Sidebar: React.FC = () => {
     return (
       <TooltipProvider>
         <div className="flex flex-col items-center space-y-4 mt-4">
+          {collapseToggle}
           <Logo isCollapsed={isCollapsed} />
 
           <Tooltip>
@@ -486,7 +497,7 @@ const Sidebar: React.FC = () => {
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
-              <p>{isRecording ? "Recording in progress..." : "Start Recording"}</p>
+              <p>{isRecording ? "Recording in progress... (⌃⌥R to stop)" : "Start Recording (⌃⌥R)"}</p>
             </TooltipContent>
           </Tooltip>
 
@@ -662,19 +673,6 @@ const Sidebar: React.FC = () => {
 
   return (
     <div className="fixed top-0 left-0 h-screen z-40">
-      {/* Floating collapse button */}
-      <button
-        onClick={toggleCollapse}
-        className="absolute -right-6 top-20 z-50 p-1 bg-white hover:bg-gray-100 rounded-full shadow-lg border"
-        style={{ transform: 'translateX(50%)' }}
-      >
-        {isCollapsed ? (
-          <ChevronRightCircle className="w-6 h-6" />
-        ) : (
-          <ChevronLeftCircle className="w-6 h-6" />
-        )}
-      </button>
-
       <div
         className={`h-screen bg-white border-r shadow-sm flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
           }`}
@@ -692,7 +690,12 @@ const Sidebar: React.FC = () => {
                 {/* <span className="text-lg text-center border rounded-full bg-blue-50 border-white font-semibold text-gray-700 mb-2 block items-center">
                   <span>Meetily</span>
                 </span> */}
-                <Logo isCollapsed={isCollapsed} />
+                <div className="flex items-center gap-1">
+                  <div className="flex-1 min-w-0">
+                    <Logo isCollapsed={isCollapsed} />
+                  </div>
+                  {collapseToggle}
+                </div>
 
                 <div className="relative mb-1">
                   <InputGroup >

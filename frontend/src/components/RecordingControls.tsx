@@ -463,6 +463,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                     </>
                   )}
 
+                  {isRecording && (
                   <div className="flex items-center space-x-1 mx-4">
                     {barHeights.map((height, index) => (
                       <div
@@ -476,6 +477,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                       />
                     ))}
                   </div>
+                  )}
                 </>
               )}
             </>

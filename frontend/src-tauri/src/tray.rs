@@ -52,7 +52,12 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
         _ => {}
     }
 }
-fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
+/// Global shortcut that starts or stops recording (Control+Option+R).
+pub const RECORDING_SHORTCUT: &str = "ctrl+alt+KeyR";
+
+/// Start recording if idle, otherwise stop and save. Shared by the tray
+/// menu and the global shortcut.
+pub(crate) fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
     focus_main_window(app);
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {

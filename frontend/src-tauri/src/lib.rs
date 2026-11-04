@@ -461,6 +461,15 @@ pub fn run() {
 
             tray::focus_main_window(app);
         }));
+        builder = builder.plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        tray::toggle_recording_handler(app);
+                    }
+                })
+                .build(),
+        );
     }
 
     builder
@@ -510,6 +519,15 @@ pub fn run() {
             // Initialize system tray
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
+            }
+
+            #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+            {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                match _app.global_shortcut().register(tray::RECORDING_SHORTCUT) {
+                    Ok(()) => log::info!("Registered recording shortcut {}", tray::RECORDING_SHORTCUT),
+                    Err(e) => log::warn!("Could not register recording shortcut {}: {}", tray::RECORDING_SHORTCUT, e),
+                }
             }
 
             // Initialize notification system with proper defaults
