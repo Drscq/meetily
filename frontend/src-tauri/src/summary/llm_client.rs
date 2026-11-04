@@ -1,3 +1,4 @@
+use crate::summary::cli_agent::CliAgentConfig;
 use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -220,6 +221,9 @@ pub enum LLMProvider {
     OpenRouter,
     BuiltInAI,
     CustomOpenAI,
+    /// A locally installed agent CLI (Claude Code, Codex, Gemini CLI, custom) driven as a
+    /// child process. Carries its own configuration so no HTTP settings are needed.
+    CliAgent(CliAgentConfig),
 }
 
 impl LLMProvider {
@@ -233,8 +237,14 @@ impl LLMProvider {
             "openrouter" => Ok(Self::OpenRouter),
             "builtin-ai" | "local-llama" | "localllama" => Ok(Self::BuiltInAI),
             "custom-openai" => Ok(Self::CustomOpenAI),
+            // The caller is expected to replace the default config with the stored one.
+            crate::summary::cli_agent::PROVIDER_ID => Ok(Self::CliAgent(CliAgentConfig::default())),
             _ => Err(format!("Unsupported LLM provider: {}", s)),
         }
+    }
+
+    pub fn is_cli_agent(&self) -> bool {
+        matches!(self, Self::CliAgent(_))
     }
 }
 
@@ -298,6 +308,23 @@ pub(crate) async fn generate_summary(
         .map_err(|e| e.to_string());
     }
 
+    // Handle the local CLI agent separately (child process, no HTTP API)
+    if let LLMProvider::CliAgent(config) = provider {
+        info!("🐞 LLM Request to CLI agent: {}", config.display_name());
+        return crate::summary::cli_agent::generate_with_cli(
+            config,
+            system_prompt,
+            user_prompt,
+            app_data_dir,
+            cancellation_token,
+        )
+        .await
+        .map(|content| LlmCompletion {
+            content,
+            reasoning_stripped: false,
+        });
+    }
+
     let (api_url, mut headers) = match provider {
         LLMProvider::OpenAI => (
             "https://api.openai.com/v1/chat/completions".to_string(),
@@ -344,9 +371,9 @@ pub(crate) async fn generate_summary(
             );
             ("https://api.anthropic.com/v1/messages".to_string(), header_map)
         }
-        LLMProvider::BuiltInAI => {
-            // This case is handled earlier with early returns
-            unreachable!("BuiltInAI is handled before this match statement")
+        LLMProvider::BuiltInAI | LLMProvider::CliAgent(_) => {
+            // These cases are handled earlier with early returns
+            unreachable!("BuiltInAI and CliAgent are handled before this match statement")
         }
     };
 
@@ -922,6 +949,7 @@ fn provider_name(provider: &LLMProvider) -> &str {
         LLMProvider::BuiltInAI => "Built-in AI",
         LLMProvider::OpenRouter => "OpenRouter",
         LLMProvider::CustomOpenAI => "Custom OpenAI",
+        LLMProvider::CliAgent(_) => "Local CLI agent",
     }
 }
 

@@ -29,9 +29,17 @@ import {
 } from '@/components/ui/command';
 import { cn, isOllamaNotInstalledError } from '@/lib/utils';
 import { toast } from 'sonner';
+import {
+  configService,
+  CliAgentConfig,
+  CliAgentPreset,
+  CliAgentPresetInfo,
+  CliAgentTestResult,
+  SummaryProvider,
+} from '@/services/configService';
 
 export interface ModelConfig {
-  provider: 'ollama' | 'groq' | 'claude' | 'openai' | 'openrouter' | 'builtin-ai' | 'custom-openai';
+  provider: SummaryProvider;
   model: string;
   whisperModel: string;
   apiKey?: string | null;
@@ -101,6 +109,62 @@ const GROQ_FALLBACK_MODELS = [
   'gemma2-9b-it',
 ];
 
+// Used until the backend preset list has loaded, and as the shape of the stored config.
+const CLI_AGENT_FALLBACK_PRESETS: CliAgentPresetInfo[] = [
+  {
+    id: 'claude-code',
+    label: 'Claude Code CLI',
+    defaultCommand: 'claude -p --output-format text',
+    notes: 'Requires the Claude Code CLI to be installed and logged in. Uses your Claude subscription; no API key needed.',
+  },
+  {
+    id: 'codex',
+    label: 'Codex CLI',
+    defaultCommand: 'codex exec --skip-git-repo-check -s read-only -o {output_file}',
+    notes: 'Requires the OpenAI Codex CLI to be installed and logged in. Uses your ChatGPT subscription; no API key needed.',
+  },
+  {
+    id: 'gemini',
+    label: 'Gemini CLI',
+    defaultCommand: 'gemini',
+    notes: 'Requires the Gemini CLI to be installed and logged in. Uses your Google account quota.',
+  },
+  {
+    id: 'custom',
+    label: 'Custom command',
+    defaultCommand: '',
+    notes: 'Any executable that reads a prompt from stdin (or via {prompt} / {prompt_file}) and prints the answer to stdout (or writes it to {output_file}).',
+  },
+];
+
+const DEFAULT_CLI_AGENT_CONFIG: CliAgentConfig = {
+  preset: 'claude-code',
+  command: CLI_AGENT_FALLBACK_PRESETS[0].defaultCommand,
+  model: null,
+  workingDir: null,
+  timeoutSecs: 600,
+};
+
+/** Trim strings and turn blanks into null before sending the config to the backend. */
+function normalizeCliAgentConfig(config: CliAgentConfig): CliAgentConfig {
+  return {
+    preset: config.preset,
+    command: config.command.trim(),
+    model: config.model?.trim() ? config.model.trim() : null,
+    workingDir: config.workingDir?.trim() ? config.workingDir.trim() : null,
+    timeoutSecs:
+      typeof config.timeoutSecs === 'number' && Number.isFinite(config.timeoutSecs)
+        ? config.timeoutSecs
+        : null,
+  };
+}
+
+/** Label shown in the model column for the CLI provider (the CLI picks the actual model). */
+function cliAgentModelLabel(config: CliAgentConfig): string {
+  const exe = config.command.trim().split(/\s+/)[0] || config.preset;
+  return config.model?.trim() ? `${exe} (${config.model.trim()})` : exe;
+}
+
 interface ModelSettingsModalProps {
   modelConfig: ModelConfig;
   setModelConfig: (config: ModelConfig | ((prev: ModelConfig) => ModelConfig)) => void;
@@ -154,6 +218,15 @@ export function ModelSettingsModal({
   const [customTopP, setCustomTopP] = useState<string>(modelConfig.topP?.toString() || '');
   const [isCustomOpenAIAdvancedOpen, setIsCustomOpenAIAdvancedOpen] = useState<boolean>(false);
   const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
+
+  // Local CLI agent state
+  const [cliAgentConfig, setCliAgentConfig] = useState<CliAgentConfig>(DEFAULT_CLI_AGENT_CONFIG);
+  const [cliAgentPresets, setCliAgentPresets] = useState<CliAgentPresetInfo[]>(CLI_AGENT_FALLBACK_PRESETS);
+  const [cliAgentLoaded, setCliAgentLoaded] = useState<boolean>(false);
+  const [isCliAgentAdvancedOpen, setIsCliAgentAdvancedOpen] = useState<boolean>(false);
+  const [isTestingCliAgent, setIsTestingCliAgent] = useState<boolean>(false);
+  const [cliAgentTestResult, setCliAgentTestResult] = useState<CliAgentTestResult | null>(null);
+  const [cliAgentTestError, setCliAgentTestError] = useState<string>('');
 
   // Combobox state
   const [modelComboboxOpen, setModelComboboxOpen] = useState<boolean>(false);
@@ -231,6 +304,7 @@ export function ModelSettingsModal({
     openrouter: openRouterModels.map((m) => m.id),
     'builtin-ai': builtinAiModels.map((m) => m.name),
     'custom-openai': customOpenAIModel ? [customOpenAIModel] : [], // User specifies model manually
+    'cli-agent': [], // The CLI decides the model; optional override lives in cliAgentConfig
   };
 
   const requiresApiKey =
@@ -249,10 +323,76 @@ export function ModelSettingsModal({
     !customOpenAIModel.trim()
   );
 
+  // CLI agent validation
+  const isCliAgentInvalid = modelConfig.provider === 'cli-agent' && !cliAgentConfig.command.trim();
+
   const isDoneDisabled =
     (requiresApiKey && (!apiKey || (typeof apiKey === 'string' && !apiKey.trim()))) ||
     (modelConfig.provider === 'ollama' && ollamaEndpointChanged) ||
-    isCustomOpenAIInvalid;
+    isCustomOpenAIInvalid ||
+    isCliAgentInvalid;
+
+  // Load CLI agent presets once, and the stored config whenever the provider is selected
+  useEffect(() => {
+    configService
+      .getCliAgentPresets()
+      .then((presets) => {
+        if (presets && presets.length > 0) setCliAgentPresets(presets);
+      })
+      .catch((err) => console.error('Failed to load CLI agent presets:', err));
+  }, []);
+
+  useEffect(() => {
+    if (modelConfig.provider !== 'cli-agent' || cliAgentLoaded) return;
+    configService
+      .getCliAgentConfig()
+      .then((stored) => {
+        if (stored) {
+          setCliAgentConfig({ ...DEFAULT_CLI_AGENT_CONFIG, ...stored });
+        }
+      })
+      .catch((err) => console.error('Failed to load CLI agent config:', err))
+      .finally(() => setCliAgentLoaded(true));
+  }, [modelConfig.provider, cliAgentLoaded]);
+
+  const applyCliAgentPreset = (presetId: CliAgentPreset) => {
+    const preset = cliAgentPresets.find((p) => p.id === presetId);
+    setCliAgentTestResult(null);
+    setCliAgentTestError('');
+    setCliAgentConfig((prev) => ({
+      ...prev,
+      preset: presetId,
+      // Switching presets replaces the command unless the user picked "custom"
+      command: presetId === 'custom' ? prev.command : (preset?.defaultCommand ?? prev.command),
+    }));
+  };
+
+  const currentCliPreset = cliAgentPresets.find((p) => p.id === cliAgentConfig.preset);
+
+  const testCliAgent = async () => {
+    if (!cliAgentConfig.command.trim()) {
+      toast.error('Enter the CLI command first');
+      return;
+    }
+    setIsTestingCliAgent(true);
+    setCliAgentTestResult(null);
+    setCliAgentTestError('');
+    try {
+      const result = await configService.testCliAgent(normalizeCliAgentConfig(cliAgentConfig));
+      setCliAgentTestResult(result);
+      if (result.status === 'success') {
+        toast.success(result.message);
+      } else {
+        toast.warning(result.message);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setCliAgentTestError(message);
+      toast.error('CLI test failed', { description: message });
+    } finally {
+      setIsTestingCliAgent(false);
+    }
+  };
 
   useEffect(() => {
     const fetchModelConfig = async () => {
@@ -615,6 +755,20 @@ export function ModelSettingsModal({
   }, [models, openRouterModels, builtinAiModels, openaiModels, claudeModels, groqModels, modelConfig.provider]);
 
   const handleSave = async () => {
+    // For the local CLI agent, validate + persist its config first
+    let savedCliAgentConfig: CliAgentConfig | null = null;
+    if (modelConfig.provider === 'cli-agent') {
+      try {
+        savedCliAgentConfig = await configService.saveCliAgentConfig(normalizeCliAgentConfig(cliAgentConfig));
+        setCliAgentConfig(savedCliAgentConfig);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('Failed to save CLI agent config:', err);
+        toast.error('Failed to save CLI agent configuration', { description: message });
+        return;
+      }
+    }
+
     // For custom-openai provider, save the custom config first
     if (modelConfig.provider === 'custom-openai') {
       try {
@@ -648,7 +802,11 @@ export function ModelSettingsModal({
       temperature: modelConfig.provider === 'custom-openai' && customTemperature ? parseFloat(customTemperature) : null,
       topP: modelConfig.provider === 'custom-openai' && customTopP ? parseFloat(customTopP) : null,
       // For custom-openai, use the customOpenAIModel as the model field
-      model: modelConfig.provider === 'custom-openai' ? customOpenAIModel.trim() : modelConfig.model,
+      model: modelConfig.provider === 'custom-openai'
+        ? customOpenAIModel.trim()
+        : modelConfig.provider === 'cli-agent'
+          ? cliAgentModelLabel(savedCliAgentConfig ?? cliAgentConfig)
+          : modelConfig.model,
     };
     setModelConfig(updatedConfig);
     console.log('ModelSettingsModal - handleSave - Updated ModelConfig:', updatedConfig);
@@ -875,6 +1033,7 @@ export function ModelSettingsModal({
               </SelectTrigger>
               <SelectContent className="max-h-64 overflow-y-auto">
                 <SelectItem value="builtin-ai">Built-in AI (Offline, No API needed)</SelectItem>
+                <SelectItem value="cli-agent">Local CLI Agent (Claude Code / Codex / Gemini)</SelectItem>
                 <SelectItem value="claude">Claude</SelectItem>
                 <SelectItem value="custom-openai">Custom Server (OpenAI)</SelectItem>
                 <SelectItem value="groq">Groq</SelectItem>
@@ -884,7 +1043,7 @@ export function ModelSettingsModal({
               </SelectContent>
             </Select>
 
-            {modelConfig.provider !== 'builtin-ai' && modelConfig.provider !== 'custom-openai' && (
+            {modelConfig.provider !== 'builtin-ai' && modelConfig.provider !== 'custom-openai' && modelConfig.provider !== 'cli-agent' && (
               <Popover open={modelComboboxOpen} onOpenChange={setModelComboboxOpen} modal={true}>
                 <PopoverTrigger asChild>
                   <Button
@@ -943,6 +1102,177 @@ export function ModelSettingsModal({
             )}
           </div>
         </div>
+
+        {/* Local CLI Agent Configuration Section */}
+        {modelConfig.provider === 'cli-agent' && (
+          <div className="space-y-4 border-t pt-4">
+            <Alert>
+              <AlertDescription className="text-sm">
+                Summaries are generated by a coding-agent CLI that is already installed and logged in on
+                this computer, so your existing subscription is used and no API key is stored. The CLI
+                runs with a clean working directory and is asked to answer without using tools.
+              </AlertDescription>
+            </Alert>
+
+            <div>
+              <Label htmlFor="cli-agent-preset">CLI</Label>
+              <Select
+                value={cliAgentConfig.preset}
+                onValueChange={(value) => applyCliAgentPreset(value as CliAgentPreset)}
+              >
+                <SelectTrigger id="cli-agent-preset" className="mt-1">
+                  <SelectValue placeholder="Select CLI" />
+                </SelectTrigger>
+                <SelectContent>
+                  {cliAgentPresets.map((preset) => (
+                    <SelectItem key={preset.id} value={preset.id}>
+                      {preset.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {currentCliPreset?.notes && (
+                <p className="text-xs text-muted-foreground mt-1">{currentCliPreset.notes}</p>
+              )}
+            </div>
+
+            <div>
+              <Label htmlFor="cli-agent-command">Command *</Label>
+              <Input
+                id="cli-agent-command"
+                value={cliAgentConfig.command}
+                onChange={(e) => {
+                  setCliAgentTestResult(null);
+                  setCliAgentConfig((prev) => ({ ...prev, command: e.target.value }));
+                }}
+                placeholder={currentCliPreset?.defaultCommand || 'my-agent --print'}
+                className="mt-1 font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                The prompt is piped to stdin and the answer read from stdout. Placeholders:{' '}
+                <code>{'{model}'}</code>, <code>{'{prompt}'}</code>, <code>{'{prompt_file}'}</code>,{' '}
+                <code>{'{output_file}'}</code>. Use an absolute path (e.g. <code>/opt/homebrew/bin/claude</code>)
+                if the CLI is not found.
+              </p>
+            </div>
+
+            <div>
+              <Label htmlFor="cli-agent-model">Model (optional)</Label>
+              <Input
+                id="cli-agent-model"
+                value={cliAgentConfig.model ?? ''}
+                onChange={(e) => setCliAgentConfig((prev) => ({ ...prev, model: e.target.value }))}
+                placeholder={
+                  cliAgentConfig.preset === 'claude-code'
+                    ? 'e.g. sonnet, opus, haiku (leave empty for the CLI default)'
+                    : cliAgentConfig.preset === 'codex'
+                      ? 'e.g. gpt-5-codex (leave empty for the CLI default)'
+                      : cliAgentConfig.preset === 'gemini'
+                        ? 'e.g. gemini-2.5-pro (leave empty for the CLI default)'
+                        : 'Passed via {model} if your command uses it'
+                }
+                className="mt-1"
+              />
+            </div>
+
+            {/* Advanced Options (Collapsible) */}
+            <div>
+              <div
+                className="flex items-center justify-between cursor-pointer py-2"
+                onClick={() => setIsCliAgentAdvancedOpen(!isCliAgentAdvancedOpen)}
+              >
+                <Label className="cursor-pointer">Advanced Options</Label>
+                {isCliAgentAdvancedOpen ? (
+                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                )}
+              </div>
+
+              {isCliAgentAdvancedOpen && (
+                <div className="space-y-3 pl-2 border-l-2 border-muted mt-2">
+                  <div>
+                    <Label htmlFor="cli-agent-working-dir">Working directory</Label>
+                    <Input
+                      id="cli-agent-working-dir"
+                      value={cliAgentConfig.workingDir ?? ''}
+                      onChange={(e) => setCliAgentConfig((prev) => ({ ...prev, workingDir: e.target.value }))}
+                      placeholder="Leave empty for an isolated scratch folder"
+                      className="mt-1 font-mono text-sm"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Keep this empty so project files such as CLAUDE.md or AGENTS.md never influence summaries.
+                    </p>
+                  </div>
+                  <div>
+                    <Label htmlFor="cli-agent-timeout">Timeout (seconds)</Label>
+                    <Input
+                      id="cli-agent-timeout"
+                      type="number"
+                      min="15"
+                      max="3600"
+                      value={cliAgentConfig.timeoutSecs ?? ''}
+                      onChange={(e) =>
+                        setCliAgentConfig((prev) => ({
+                          ...prev,
+                          timeoutSecs: e.target.value ? parseInt(e.target.value, 10) : null,
+                        }))
+                      }
+                      placeholder="600"
+                      className="mt-1"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={testCliAgent}
+              disabled={isTestingCliAgent || !cliAgentConfig.command.trim()}
+              className="w-full"
+            >
+              {isTestingCliAgent ? (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  Running CLI…
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="mr-2 h-4 w-4" />
+                  Test CLI
+                </>
+              )}
+            </Button>
+
+            {cliAgentTestResult && (
+              <Alert className={cliAgentTestResult.status === 'success' ? 'border-green-500 bg-green-50' : 'border-yellow-500 bg-yellow-50'}>
+                <AlertDescription className="text-sm space-y-1">
+                  <div className={cliAgentTestResult.status === 'success' ? 'text-green-800' : 'text-yellow-800'}>
+                    {cliAgentTestResult.message}
+                  </div>
+                  <div className="text-xs text-muted-foreground font-mono break-all">
+                    {cliAgentTestResult.resolvedExecutable}
+                  </div>
+                  {cliAgentTestResult.output && (
+                    <pre className="text-xs bg-white/70 border rounded p-2 whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
+                      {cliAgentTestResult.output}
+                    </pre>
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
+            {cliAgentTestError && (
+              <Alert className="border-red-500 bg-red-50">
+                <AlertDescription className="text-sm text-red-800 whitespace-pre-wrap break-words">
+                  {cliAgentTestError}
+                </AlertDescription>
+              </Alert>
+            )}
+          </div>
+        )}
 
         {/* Custom OpenAI Configuration Section */}
         {modelConfig.provider === 'custom-openai' && (

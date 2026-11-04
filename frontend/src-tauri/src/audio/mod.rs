@@ -89,7 +89,7 @@ pub use recording_commands::{
     is_recording, get_transcription_status, RecordingArgs, TranscriptionStatus, TranscriptUpdate
 };
 pub use recording_preferences::{
-    RecordingPreferences, get_default_recordings_folder
+    RecordingPreferences, RecordingSaveOptions, get_default_recordings_folder
 };
 pub use recording_saver::RecordingSaver;
 pub use level_monitor::{AudioLevelMonitor, AudioLevelData, AudioLevelUpdate};

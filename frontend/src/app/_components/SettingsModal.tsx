@@ -99,11 +99,12 @@ export function SettingsModals({
                         setModelConfig({
                           ...modelConfig,
                           provider,
-                          model: modelOptions[provider][0]
+                          model: modelOptions[provider]?.[0] ?? ''
                         });
                       }}
                     >
                       <option value="builtin-ai">Built-in AI</option>
+                      <option value="cli-agent">Local CLI Agent</option>
                       <option value="claude">Claude</option>
                       <option value="groq">Groq</option>
                       <option value="ollama">Ollama</option>
@@ -116,7 +117,7 @@ export function SettingsModals({
                       value={modelConfig.model}
                       onChange={(e) => setModelConfig((prev: ModelConfig) => ({ ...prev, model: e.target.value }))}
                     >
-                      {modelOptions[modelConfig.provider].map((model: string) => (
+                      {(modelOptions[modelConfig.provider] ?? []).map((model: string) => (
                         <option key={model} value={model}>
                           {model}
                         </option>

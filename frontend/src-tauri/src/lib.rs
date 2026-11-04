@@ -739,6 +739,11 @@ pub fn run() {
             api::api_save_custom_openai_config,
             api::api_get_custom_openai_config,
             api::api_test_custom_openai_connection,
+            // Local CLI agent (Claude Code / Codex / Gemini CLI) summarizer commands
+            summary::cli_agent::api_get_cli_agent_presets,
+            summary::cli_agent::api_get_cli_agent_config,
+            summary::cli_agent::api_save_cli_agent_config,
+            summary::cli_agent::api_test_cli_agent,
             // Summary commands
             summary::commands::api_process_transcript,
             summary::commands::api_get_summary,
@@ -768,6 +773,7 @@ pub fn run() {
             audio::recording_preferences::get_default_recordings_folder_path,
             audio::recording_preferences::open_recordings_folder,
             audio::recording_preferences::select_recording_folder,
+            audio::recording_preferences::preview_recording_name,
             audio::recording_preferences::get_available_audio_backends,
             audio::recording_preferences::get_current_audio_backend,
             audio::recording_preferences::set_audio_backend,

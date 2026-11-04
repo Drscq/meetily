@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Audio Processing**: Rust (cpal, whisper-rs, professional audio mixing)
 - **Transcription**: Whisper.cpp / whisper-rs and Parakeet paths in the Tauri app
 - **App API Surface**: Tauri commands and events, not a separate FastAPI service
-- **LLM Integration**: Ollama (local), Claude, Groq, OpenRouter
+- **LLM Integration**: Ollama (local), Claude, Groq, OpenRouter, OpenAI-compatible servers, and a local CLI agent provider (Claude Code / Codex / Gemini CLI driven as a child process, see `docs/local-recording-and-cli-summaries.md`)
 
 ## Essential Development Commands
 

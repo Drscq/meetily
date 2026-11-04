@@ -352,17 +352,18 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         "message": "Recording initialization started"
     })).map_err(|e| e.to_string())?;
 
-    // Load recording preferences to get auto_save AND device preferences
-    let (auto_save, preferred_mic_name, preferred_system_name) =
+    // Load recording preferences to get auto_save, device preferences, and save location/naming
+    let (auto_save, preferred_mic_name, preferred_system_name, save_options) =
         match super::recording_preferences::load_recording_preferences(&app).await {
             Ok(prefs) => {
-                info!("📋 Loaded recording preferences: auto_save={}, preferred_mic={:?}, preferred_system={:?}",
-                      prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device);
-                (prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device)
+                info!("📋 Loaded recording preferences: auto_save={}, preferred_mic={:?}, preferred_system={:?}, save_folder={:?}",
+                      prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device, prefs.save_folder);
+                let save_options = prefs.save_options();
+                (prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device, save_options)
             }
             Err(e) => {
                 warn!("Failed to load recording preferences, using defaults: {}", e);
-                (true, None, None)
+                (true, None, None, super::recording_preferences::RecordingSaveOptions::default())
             }
         };
 
@@ -393,6 +394,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         )
     });
     manager.set_meeting_name(Some(effective_meeting_name));
+    manager.set_save_options(save_options);
 
     // Set up error callback
     let app_for_error = app.clone();
@@ -559,15 +561,16 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     // Create new recording manager
     let mut manager = RecordingManager::new();
 
-    // Load recording preferences to check auto_save setting
-    let auto_save = match super::recording_preferences::load_recording_preferences(&app).await {
+    // Load recording preferences to check auto_save setting and save location/naming
+    let (auto_save, save_options) = match super::recording_preferences::load_recording_preferences(&app).await {
         Ok(prefs) => {
-            info!("📋 Loaded recording preferences: auto_save={}", prefs.auto_save);
-            prefs.auto_save
+            info!("📋 Loaded recording preferences: auto_save={}, save_folder={:?}", prefs.auto_save, prefs.save_folder);
+            let save_options = prefs.save_options();
+            (prefs.auto_save, save_options)
         }
         Err(e) => {
             warn!("Failed to load recording preferences, defaulting to auto_save=true: {}", e);
-            true // Default to saving if preferences can't be loaded
+            (true, super::recording_preferences::RecordingSaveOptions::default()) // Default to saving if preferences can't be loaded
         }
     };
 
@@ -580,6 +583,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         )
     });
     manager.set_meeting_name(Some(effective_meeting_name));
+    manager.set_save_options(save_options);
 
     // Set up error callback
     let app_for_error = app.clone();

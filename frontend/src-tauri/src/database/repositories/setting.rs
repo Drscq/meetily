@@ -86,6 +86,7 @@ impl SettingsRepository {
             "groq" => "groqApiKey",
             "openrouter" => "openRouterApiKey",
             "builtin-ai" => return Ok(()), // No API key needed
+            "cli-agent" => return Ok(()),  // Local CLI uses its own login session
             _ => {
                 return Err(sqlx::Error::Protocol(
                     format!("Invalid provider: {}", provider).into(),
@@ -124,6 +125,7 @@ impl SettingsRepository {
             "claude" => "anthropicApiKey",
             "openrouter" => "openRouterApiKey",
             "builtin-ai" => return Ok(None), // No API key needed
+            "cli-agent" => return Ok(None),  // Local CLI uses its own login session
             _ => {
                 return Err(sqlx::Error::Protocol(
                     format!("Invalid provider: {}", provider).into(),
@@ -250,6 +252,7 @@ impl SettingsRepository {
             "claude" => "anthropicApiKey",
             "openrouter" => "openRouterApiKey",
             "builtin-ai" => return Ok(()), // No API key needed
+            "cli-agent" => return Ok(()),  // No API key stored
             _ => {
                 return Err(sqlx::Error::Protocol(
                     format!("Invalid provider: {}", provider).into(),

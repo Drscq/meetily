@@ -8,8 +8,18 @@
 import { invoke } from '@tauri-apps/api/core';
 import { TranscriptModelProps } from '@/components/TranscriptSettings';
 
+export type SummaryProvider =
+  | 'ollama'
+  | 'groq'
+  | 'claude'
+  | 'openrouter'
+  | 'openai'
+  | 'builtin-ai'
+  | 'custom-openai'
+  | 'cli-agent';
+
 export interface ModelConfig {
-  provider: 'ollama' | 'groq' | 'claude' | 'openrouter' | 'openai' | 'builtin-ai' | 'custom-openai';
+  provider: SummaryProvider;
   model: string;
   whisperModel: string;
   /**
@@ -39,6 +49,38 @@ export interface CustomOpenAIConfig {
 export interface RecordingPreferences {
   preferred_mic_device: string | null;
   preferred_system_device: string | null;
+}
+
+/** Which locally installed agent CLI drives summarization. */
+export type CliAgentPreset = 'claude-code' | 'codex' | 'gemini' | 'custom';
+
+/**
+ * Configuration for the "Local CLI Agent" summary provider. The CLI (Claude Code, Codex,
+ * Gemini CLI, ...) is spawned as a child process and authenticates with its own login,
+ * so no API key is stored by Meetily.
+ */
+export interface CliAgentConfig {
+  preset: CliAgentPreset;
+  /** Full command line. Placeholders: {model} {prompt} {prompt_file} {output_file}. */
+  command: string;
+  model: string | null;
+  workingDir: string | null;
+  timeoutSecs: number | null;
+}
+
+export interface CliAgentPresetInfo {
+  id: CliAgentPreset;
+  label: string;
+  defaultCommand: string;
+  notes: string;
+}
+
+export interface CliAgentTestResult {
+  status: 'success' | 'warning';
+  message: string;
+  resolvedExecutable: string;
+  output: string;
+  durationMs: number;
 }
 
 /**
@@ -111,6 +153,26 @@ export class ConfigService {
       apiKey,
       model,
     });
+  }
+
+  /** Presets for the local CLI agent provider (labels, default commands, notes). */
+  async getCliAgentPresets(): Promise<CliAgentPresetInfo[]> {
+    return invoke<CliAgentPresetInfo[]>('api_get_cli_agent_presets');
+  }
+
+  /** Stored local CLI agent configuration, or null when never configured. */
+  async getCliAgentConfig(): Promise<CliAgentConfig | null> {
+    return invoke<CliAgentConfig | null>('api_get_cli_agent_config');
+  }
+
+  /** Validate and persist the local CLI agent configuration. Returns the normalized config. */
+  async saveCliAgentConfig(config: CliAgentConfig): Promise<CliAgentConfig> {
+    return invoke<CliAgentConfig>('api_save_cli_agent_config', { config });
+  }
+
+  /** Run the CLI once with a tiny prompt to confirm it is installed and logged in. */
+  async testCliAgent(config: CliAgentConfig): Promise<CliAgentTestResult> {
+    return invoke<CliAgentTestResult>('api_test_cli_agent', { config });
   }
 }
 

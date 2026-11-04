@@ -351,7 +351,7 @@ impl SummaryService {
         );
 
         // Parse provider
-        let provider = match LLMProvider::from_str(&model_provider) {
+        let mut provider = match LLMProvider::from_str(&model_provider) {
             Ok(p) => p,
             Err(e) => {
                 Self::fail_and_cleanup(&pool, &meeting_id, started_at, &e).await;
@@ -359,8 +359,39 @@ impl SummaryService {
             }
         };
 
-        // Validate and setup api_key, Flexible for Ollama, BuiltInAI, and CustomOpenAI
-        let api_key = if provider == LLMProvider::Ollama || provider == LLMProvider::BuiltInAI || provider == LLMProvider::CustomOpenAI {
+        // The local CLI agent carries its stored configuration inside the provider value
+        if provider.is_cli_agent() {
+            match crate::summary::cli_agent::load_config(&_app).await {
+                Ok(Some(config)) => match config.validated() {
+                    Ok(config) => {
+                        info!("✓ Using local CLI agent: {}", config.display_name());
+                        provider = LLMProvider::CliAgent(config);
+                    }
+                    Err(e) => {
+                        let err_msg = format!("Local CLI agent configuration is invalid: {}", e);
+                        Self::fail_and_cleanup(&pool, &meeting_id, started_at, &err_msg).await;
+                        return;
+                    }
+                },
+                Ok(None) => {
+                    let err_msg = "Local CLI agent selected but not configured. Open Settings → Summary Model and set the CLI command.";
+                    Self::fail_and_cleanup(&pool, &meeting_id, started_at, err_msg).await;
+                    return;
+                }
+                Err(e) => {
+                    let err_msg = format!("Failed to load local CLI agent configuration: {}", e);
+                    Self::fail_and_cleanup(&pool, &meeting_id, started_at, &err_msg).await;
+                    return;
+                }
+            }
+        }
+
+        // Validate and setup api_key, Flexible for Ollama, BuiltInAI, CustomOpenAI, and CliAgent
+        let api_key = if provider == LLMProvider::Ollama
+            || provider == LLMProvider::BuiltInAI
+            || provider == LLMProvider::CustomOpenAI
+            || provider.is_cli_agent()
+        {
             // These providers don't require API keys from the standard database column
             String::new()
         } else {
@@ -471,7 +502,8 @@ impl SummaryService {
                 }
             }
         } else {
-            // Cloud providers (OpenAI, Claude, Groq, CustomOpenAI) handle large contexts automatically
+            // Cloud providers (OpenAI, Claude, Groq, CustomOpenAI) and frontier-model CLIs
+            // handle large contexts automatically
             100000  // Effectively unlimited for single-pass processing
         };
 

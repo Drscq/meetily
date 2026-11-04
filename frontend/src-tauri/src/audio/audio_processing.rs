@@ -37,10 +37,26 @@ pub fn create_meeting_folder(
     meeting_name: &str,
     create_checkpoints_dir: bool,
 ) -> Result<PathBuf> {
-    let timestamp = Utc::now().format("%Y-%m-%d_%H-%M").to_string();
-    let sanitized_name = sanitize_filename(meeting_name);
-    let folder_name = format!("{}_{}", sanitized_name, timestamp);
-    let meeting_folder = base_path.join(folder_name);
+    let folder_name = super::recording_preferences::RecordingSaveOptions::default()
+        .render_folder_name(meeting_name, chrono::Local::now());
+    create_meeting_folder_named(base_path, &folder_name, create_checkpoints_dir)
+}
+
+/// Create a meeting folder with an already-rendered name under `base_path`.
+///
+/// If a folder with that name already exists (two meetings started within the same
+/// minute, or a template without a time component), a numeric suffix is appended
+/// (`Name`, `Name (2)`, `Name (3)`, ...) so recordings are never mixed together.
+pub fn create_meeting_folder_named(
+    base_path: &PathBuf,
+    folder_name: &str,
+    create_checkpoints_dir: bool,
+) -> Result<PathBuf> {
+    std::fs::create_dir_all(base_path)?;
+
+    let sanitized = sanitize_filename(folder_name);
+    let folder_name = if sanitized.is_empty() { "Meeting".to_string() } else { sanitized };
+    let meeting_folder = unique_child_path(base_path, &folder_name);
 
     // Create main meeting folder
     std::fs::create_dir_all(&meeting_folder)?;
@@ -55,6 +71,22 @@ pub fn create_meeting_folder(
     }
 
     Ok(meeting_folder)
+}
+
+/// Return `base/name`, or `base/name (N)` for the smallest N >= 2 that does not exist yet.
+pub fn unique_child_path(base_path: &PathBuf, name: &str) -> PathBuf {
+    let candidate = base_path.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    for n in 2..10_000u32 {
+        let candidate = base_path.join(format!("{} ({})", name, n));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // Practically unreachable; fall back to a timestamped name.
+    base_path.join(format!("{}_{}", name, Utc::now().format("%Y%m%d%H%M%S%f")))
 }
 
 pub fn normalize_v2(audio: &[f32]) -> Vec<f32> {

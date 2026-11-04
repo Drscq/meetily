@@ -514,6 +514,12 @@ impl RecordingManager {
         self.recording_saver.set_meeting_name(name);
     }
 
+    /// Set the save folder and naming template used when the meeting folder is created.
+    /// Must be called before `start_recording`.
+    pub fn set_save_options(&mut self, options: super::recording_preferences::RecordingSaveOptions) {
+        self.recording_saver.set_save_options(options);
+    }
+
     /// Add a structured transcript segment to be saved later
     pub fn add_transcript_segment(&self, segment: super::recording_saver::TranscriptSegment) {
         self.recording_saver.add_transcript_segment(segment);

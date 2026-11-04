@@ -23,9 +23,31 @@ pub struct IncrementalAudioSaver {
     checkpoints_dir: PathBuf,
     meeting_folder: PathBuf,
     sample_rate: u32,
+    /// File name (with extension) of the merged output inside `meeting_folder`.
+    output_file_name: String,
 }
 
 impl IncrementalAudioSaver {
+    /// Default merged output file name; kept for compatibility with existing meetings.
+    pub const DEFAULT_OUTPUT_FILE_NAME: &'static str = "audio.mp4";
+
+    /// Override the merged output file name (e.g. `Team Standup_2025-11-04.mp4`).
+    /// Only the final path component is used; the extension is forced to `.mp4`.
+    pub fn set_output_file_name(&mut self, file_name: &str) {
+        let stem = std::path::Path::new(file_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("audio");
+        self.output_file_name = format!("{}.mp4", stem);
+    }
+
+    /// File name (with extension) the merged recording will be written to.
+    pub fn output_file_name(&self) -> &str {
+        &self.output_file_name
+    }
+
     /// Create a new incremental saver
     ///
     /// # Arguments
@@ -46,6 +68,7 @@ impl IncrementalAudioSaver {
             checkpoints_dir,
             meeting_folder,
             sample_rate,
+            output_file_name: Self::DEFAULT_OUTPUT_FILE_NAME.to_string(),
         })
     }
 
@@ -129,7 +152,7 @@ impl IncrementalAudioSaver {
         }
 
         // Merge all checkpoints using FFmpeg concat
-        let final_audio_path = self.meeting_folder.join("audio.mp4");
+        let final_audio_path = self.meeting_folder.join(&self.output_file_name);
         self.merge_checkpoints(&final_audio_path).await?;
 
         // Clean up checkpoints directory

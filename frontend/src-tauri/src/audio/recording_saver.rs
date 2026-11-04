@@ -8,8 +8,9 @@ use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 
 use super::recording_state::AudioChunk;
-use super::audio_processing::create_meeting_folder;
+use super::audio_processing::create_meeting_folder_named;
 use super::incremental_saver::IncrementalAudioSaver;
+use super::recording_preferences::RecordingSaveOptions;
 
 /// Structured transcript segment for JSON export
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +55,8 @@ pub struct RecordingSaver {
     metadata: Option<MeetingMetadata>,
     transcript_segments: Arc<Mutex<Vec<TranscriptSegment>>>,
     is_saving: Arc<Mutex<bool>>,
+    /// Where (base folder) and under which names this session is written.
+    save_options: RecordingSaveOptions,
 }
 
 impl RecordingSaver {
@@ -65,12 +68,19 @@ impl RecordingSaver {
             metadata: None,
             transcript_segments: Arc::new(Mutex::new(Vec::new())),
             is_saving: Arc::new(Mutex::new(false)),
+            save_options: RecordingSaveOptions::default(),
         }
     }
 
     /// Set the meeting name for this recording session
     pub fn set_meeting_name(&mut self, name: Option<String>) {
         self.meeting_name = name;
+    }
+
+    /// Set the save folder and naming template for this recording session.
+    /// Must be called before `start_accumulation`, which creates the meeting folder.
+    pub fn set_save_options(&mut self, options: RecordingSaveOptions) {
+        self.save_options = options;
     }
 
     /// Set device information in metadata
@@ -222,15 +232,24 @@ impl RecordingSaver {
     /// * `meeting_name` - Name of the meeting
     /// * `create_checkpoints` - Whether to create .checkpoints/ directory and IncrementalAudioSaver
     fn initialize_meeting_folder(&mut self, meeting_name: &str, create_checkpoints: bool) -> Result<()> {
-        // Load preferences to get base recordings folder
-        let base_folder = super::recording_preferences::get_default_recordings_folder();
+        // Use the user's configured save folder and naming template (set via set_save_options).
+        let now = chrono::Local::now();
+        let base_folder = self.save_options.base_folder.clone();
+        let folder_name = self.save_options.render_folder_name(meeting_name, now);
+        let audio_file_name = self.save_options.render_audio_file_name(meeting_name, now);
+
+        info!(
+            "Creating meeting folder {:?} under {:?} (audio file: {})",
+            folder_name, base_folder, audio_file_name
+        );
 
         // Create meeting folder structure (with or without .checkpoints/ subdirectory)
-        let meeting_folder = create_meeting_folder(&base_folder, meeting_name, create_checkpoints)?;
+        let meeting_folder = create_meeting_folder_named(&base_folder, &folder_name, create_checkpoints)?;
 
         // Only initialize incremental saver if checkpoints are needed (auto_save is true)
         if create_checkpoints {
-            let incremental_saver = IncrementalAudioSaver::new(meeting_folder.clone(), 48000)?;
+            let mut incremental_saver = IncrementalAudioSaver::new(meeting_folder.clone(), 48000)?;
+            incremental_saver.set_output_file_name(&audio_file_name);
             self.incremental_saver = Some(Arc::new(AsyncMutex::new(incremental_saver)));
             info!("✅ Incremental audio saver initialized for meeting: {}", meeting_name);
         } else {
@@ -249,7 +268,7 @@ impl RecordingSaver {
                 microphone: None,  // Could be enhanced to store actual device names
                 system_audio: None,
             },
-            audio_file: if create_checkpoints { "audio.mp4".to_string() } else { "".to_string() },
+            audio_file: if create_checkpoints { audio_file_name } else { "".to_string() },
             transcript_file: "transcripts.json".to_string(),
             sample_rate: 48000,
             status: "recording".to_string(),
