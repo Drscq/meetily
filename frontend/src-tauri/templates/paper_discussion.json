@@ -1,0 +1,32 @@
+{
+  "name": "Paper Discussion (论文讨论)",
+  "description": "Discussion of a research paper: contributions, critiques, and ideas for our own work.",
+  "sections": [
+    {
+      "title": "Paper and Context",
+      "instruction": "Identify the paper(s) discussed (title, authors, venue if mentioned) and why they were discussed.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Key Contributions",
+      "instruction": "List the main ideas, techniques, and results of the paper as explained in the discussion.",
+      "format": "list"
+    },
+    {
+      "title": "Critiques and Open Questions",
+      "instruction": "List limitations, flawed assumptions, missing evaluations, and unresolved questions raised.",
+      "format": "list"
+    },
+    {
+      "title": "Ideas for Our Work",
+      "instruction": "List ideas, extensions, or connections to our own research that came up.",
+      "format": "list"
+    },
+    {
+      "title": "Action Items",
+      "instruction": "List follow-up tasks (reading, experiments, writing) with owners and deadlines.",
+      "format": "list",
+      "item_format": "| **Owner** | Task | Due |\n| --- | --- | --- |"
+    }
+  ]
+}

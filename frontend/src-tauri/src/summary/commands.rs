@@ -1,5 +1,5 @@
 use crate::database::repositories::{
-    meeting::MeetingsRepository,
+    meeting::MeetingsRepository, setting::SettingsRepository,
     summary::SummaryProcessesRepository, transcript_chunk::TranscriptChunksRepository,
 };
 use crate::state::AppState;
@@ -35,6 +35,83 @@ fn next_summary_start(now: DateTime<Utc>) -> DateTime<Utc> {
     *last = Some(next);
     next
 }
+/// Reset the meeting's summary process row and save the transcript chunks,
+/// returning the process start time and its cancellation token.
+async fn begin_summary_process(
+    pool: &sqlx::SqlitePool,
+    meeting_id: &str,
+    text: &str,
+    model: &str,
+    model_name: &str,
+    chunk_size: Option<i32>,
+    overlap: Option<i32>,
+) -> Result<(DateTime<Utc>, tokio_util::sync::CancellationToken), String> {
+    // ponytail: summary starts are rare; use per-meeting locks only if start contention is measured.
+    let _start_guard = SUMMARY_START_LOCK.lock().await;
+    let started_at = next_summary_start(Utc::now());
+    SummaryProcessesRepository::create_or_reset_process(pool, meeting_id, started_at)
+        .await
+        .map_err(|e| format!("Failed to initialize process: {}", e))?;
+
+    if let Err(error) = TranscriptChunksRepository::save_transcript_data(
+        pool,
+        meeting_id,
+        text,
+        model,
+        model_name,
+        chunk_size.unwrap_or(40000),
+        overlap.unwrap_or(1000),
+    )
+    .await
+    {
+        let message = format!("Failed to save transcript data: {}", error);
+        let _ = SummaryProcessesRepository::update_process_failed(pool, meeting_id, started_at, &message).await;
+        return Err(message);
+    }
+
+    Ok((started_at, SummaryService::register_cancellation_token(meeting_id, started_at)))
+}
+
+/// Generate a summary with the saved summary model and wait for it to
+/// finish. Used by the smart pipeline; the UI path is `api_process_transcript`.
+pub(crate) async fn generate_summary_and_wait<R: Runtime>(
+    app: AppHandle<R>,
+    pool: sqlx::SqlitePool,
+    meeting_id: &str,
+    text: String,
+    template_id: &str,
+) -> Result<(), String> {
+    let config = SettingsRepository::get_model_config(&pool)
+        .await
+        .map_err(|e| format!("Failed to read summary model: {}", e))?
+        .ok_or("No summary model configured")?;
+    let (started_at, cancellation_token) =
+        begin_summary_process(&pool, meeting_id, &text, &config.provider, &config.model, None, None).await?;
+    SummaryService::process_transcript_background(
+        app,
+        pool.clone(),
+        meeting_id.to_string(),
+        started_at,
+        cancellation_token,
+        text,
+        config.provider,
+        config.model,
+        String::new(),
+        template_id.to_string(),
+        None,
+    )
+    .await;
+    let process = SummaryProcessesRepository::get_summary_data(&pool, meeting_id)
+        .await
+        .map_err(|e| format!("Failed to read summary status: {}", e))?
+        .ok_or("Summary process disappeared")?;
+    if process.status.eq_ignore_ascii_case("completed") {
+        Ok(())
+    } else {
+        Err(process.error.unwrap_or_else(|| format!("Summary ended with status {}", process.status)))
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SummaryResponse {
     pub status: String,
@@ -492,39 +569,8 @@ pub async fn api_process_transcript<R: Runtime>(
         if t.is_empty() { None } else { Some(t.to_string()) }
     });
 
-    // ponytail: summary starts are rare; use per-meeting locks only if start contention is measured.
-    let _start_guard = SUMMARY_START_LOCK.lock().await;
-    let started_at = next_summary_start(Utc::now());
-    SummaryProcessesRepository::create_or_reset_process(&pool, &m_id, started_at)
-        .await
-        .map_err(|e| format!("Failed to initialize process: {}", e))?;
-
-    let chunk_size = _chunk_size.unwrap_or(40000);
-    let overlap = _overlap.unwrap_or(1000);
-    if let Err(error) = TranscriptChunksRepository::save_transcript_data(
-        &pool,
-        &m_id,
-        &text,
-        &model,
-        &model_name,
-        chunk_size,
-        overlap,
-    )
-    .await
-    {
-        let message = format!("Failed to save transcript data: {}", error);
-        let _ = SummaryProcessesRepository::update_process_failed(
-            &pool,
-            &m_id,
-            started_at,
-            &message,
-        )
-        .await;
-        return Err(message);
-    }
-
-    let cancellation_token =
-        SummaryService::register_cancellation_token(&m_id, started_at);
+    let (started_at, cancellation_token) =
+        begin_summary_process(&pool, &m_id, &text, &model, &model_name, _chunk_size, _overlap).await?;
     let meeting_id_clone = m_id.clone();
     tauri::async_runtime::spawn(async move {
         SummaryService::process_transcript_background(

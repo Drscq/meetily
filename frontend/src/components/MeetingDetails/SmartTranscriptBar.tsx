@@ -100,7 +100,7 @@ export function SmartTranscriptBar({
     <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 px-4 py-2 border-b border-gray-100 text-xs text-gray-600">
       {processing ? (
         <span className="flex items-center gap-1">
-          <Loader2 className="w-3 h-3 animate-spin" /> Correcting and filing with AI…
+          <Loader2 className="w-3 h-3 animate-spin" /> Correcting, filing and summarizing with AI…
         </span>
       ) : status === 'pending' ? (
         <span className="text-amber-700" title={versions?.status?.error ?? ''}>

@@ -37,6 +37,16 @@ Transcript:
     )
 }
 
+/// Summary template used for meetings in a category.
+pub fn template_for_category(category: Option<&str>) -> &'static str {
+    match category {
+        Some("组会") => "group_meeting",
+        Some("面试") => "interview",
+        Some("论文讨论") => "paper_discussion",
+        _ => "standard_meeting",
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct RawClassification {
     title: String,
@@ -149,6 +159,25 @@ mod tests {
         assert_eq!(parse("Weekly Sync", "  组会 ").unwrap().category, "组会");
         for bad in ["", "Group Meeting", "a/b", "非常非常非常非常长的一个分类名称啊"] {
             assert_eq!(parse("Weekly Sync", bad).unwrap().category, INBOX, "{bad}");
+        }
+    }
+
+    #[test]
+    fn each_category_gets_its_own_loadable_template() {
+        let cases = [
+            (Some("组会"), "group_meeting"),
+            (Some("面试"), "interview"),
+            (Some("论文讨论"), "paper_discussion"),
+            (Some("课程"), "standard_meeting"),
+            (Some(INBOX), "standard_meeting"),
+            (None, "standard_meeting"),
+        ];
+        for (category, expected) in cases {
+            let id = template_for_category(category);
+            assert_eq!(id, expected, "{category:?}");
+            let template = crate::summary::templates::get_template(id)
+                .unwrap_or_else(|e| panic!("template {id} must load: {e}"));
+            assert!(!template.sections.is_empty(), "{id} has sections");
         }
     }
 }

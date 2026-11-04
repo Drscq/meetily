@@ -1,0 +1,33 @@
+{
+  "name": "Group Meeting (组会)",
+  "description": "Research group meeting: per-person progress, advisor feedback, and next steps.",
+  "sections": [
+    {
+      "title": "Summary",
+      "instruction": "Give a one-paragraph overview of what the group covered and the overall direction agreed on.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Progress by Person",
+      "instruction": "For each presenter, summarize what they reported: results, experiments, drafts, and blockers. Use the speaker's name when it is clear from the transcript.",
+      "format": "list",
+      "item_format": "| **Person** | Progress | Blockers |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Advisor Feedback",
+      "instruction": "List concrete feedback, critiques, and suggestions from the advisor or senior members, attributed to whom it was directed.",
+      "format": "list"
+    },
+    {
+      "title": "Decisions",
+      "instruction": "List decisions made about research direction, paper plans, deadlines, or methods.",
+      "format": "list"
+    },
+    {
+      "title": "Action Items",
+      "instruction": "List assigned tasks with owner and deadline, with the transcript timestamp for reference.",
+      "format": "list",
+      "item_format": "| **Owner** | Task | Due | Segment Time stamp |\n| --- | --- | --- | --- |"
+    }
+  ]
+}

@@ -756,6 +756,7 @@ pub fn run() {
             smart::commands::api_smart_get_transcript_versions,
             smart::commands::api_smart_undo_corrections,
             smart::commands::api_smart_process_meeting,
+            smart::commands::api_smart_template_for_meeting,
             // Summary commands
             summary::commands::api_process_transcript,
             summary::commands::api_get_summary,

@@ -292,6 +292,13 @@ pub async fn start_import<R: Runtime>(
                     "duration_seconds": res.duration_seconds
                 }),
             );
+            if let Some(state) = app.try_state::<AppState>() {
+                crate::smart::commands::spawn_process_meeting(
+                    app.clone(),
+                    state.db_manager.pool().clone(),
+                    res.meeting_id.clone(),
+                );
+            }
         }
         Err(e) => {
             let _ = app.emit(

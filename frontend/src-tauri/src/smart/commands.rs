@@ -4,7 +4,7 @@ use super::cli_runner::CliFallbackRunner;
 use super::correction::{parse_correction_response, Segment};
 use super::glossary::{Glossary, GlossaryTerm};
 use super::organize::{meeting_placement, MeetingPlacement};
-use super::pipeline::{self, ModelRunner, ProcessingStatus};
+use super::pipeline::{self, ModelRunner, ProcessingStatus, SummaryGenerator};
 use super::transcript_versions::{self, Version};
 use crate::state::AppState;
 use crate::summary::cli_agent::{default_working_dir, CliAgentConfig, CliAgentPreset};
@@ -54,6 +54,31 @@ fn runner<R: Runtime>(app: &AppHandle<R>) -> CliFallbackRunner {
     CliFallbackRunner::new(default_cli_chain(), dir)
 }
 
+/// Generates summaries through the regular summary service with the
+/// summary model chosen in settings.
+struct AppSummaryGenerator<R: Runtime> {
+    app: AppHandle<R>,
+    pool: SqlitePool,
+}
+
+#[async_trait::async_trait]
+impl<R: Runtime> SummaryGenerator for AppSummaryGenerator<R> {
+    async fn generate(&self, meeting_id: &str, transcript: &str, template_id: &str) -> Result<(), String> {
+        crate::summary::commands::generate_summary_and_wait(
+            self.app.clone(),
+            self.pool.clone(),
+            meeting_id,
+            transcript.to_string(),
+            template_id,
+        )
+        .await
+    }
+}
+
+fn summarizer<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool) -> AppSummaryGenerator<R> {
+    AppSummaryGenerator { app: app.clone(), pool: pool.clone() }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SmartPipelineEvent {
@@ -86,7 +111,7 @@ pub async fn process_meeting<R: Runtime>(
     }
     emit("processing", 0, None);
     let root = save_root(app).await;
-    let result = pipeline::process_meeting(pool, &runner(app), meeting_id, &root).await;
+    let result = pipeline::process_meeting(pool, &runner(app), &summarizer(app, pool), meeting_id, &root).await;
     IN_FLIGHT.lock().unwrap().remove(meeting_id);
     match result {
         Ok(outcome) => {
@@ -97,12 +122,35 @@ pub async fn process_meeting<R: Runtime>(
                 outcome.terms_proposed
             );
             emit("done", outcome.segments_corrected, None);
+            notify_filed(app, pool, meeting_id).await;
             Ok(outcome.segments_corrected)
         }
         Err(e) => {
             emit("pending", 0, Some(e.clone()));
             Err(e)
         }
+    }
+}
+
+/// "Meeting filed: <title> → <category>", honoring the user's
+/// transcription-complete notification preference.
+async fn notify_filed<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, meeting_id: &str) {
+    use crate::notifications::{
+        commands::NotificationManagerState,
+        types::{Notification, NotificationType},
+    };
+    let Ok(placement) = meeting_placement(pool, meeting_id).await else { return };
+    let Some(category) = placement.category else { return };
+    let Some(state) = app.try_state::<NotificationManagerState<R>>() else { return };
+    let guard = state.read().await;
+    let Some(manager) = guard.as_ref() else { return };
+    let notification = Notification::new(
+        "Meeting filed",
+        format!("{} → {}", placement.title, category),
+        NotificationType::TranscriptionComplete,
+    );
+    if let Err(e) = manager.show_notification(notification).await {
+        log::warn!("smart: notification failed for {}: {}", meeting_id, e);
     }
 }
 
@@ -115,7 +163,7 @@ pub fn spawn_retry_loop<R: Runtime>(app: AppHandle<R>) {
             if let Some(state) = app.try_state::<AppState>() {
                 let pool = state.db_manager.pool().clone();
                 let root = save_root(&app).await;
-                match pipeline::retry_pending(&pool, &runner(&app), &root, MAX_ATTEMPTS).await {
+                match pipeline::retry_pending(&pool, &runner(&app), &summarizer(&app, &pool), &root, MAX_ATTEMPTS).await {
                     Ok(ids) if !ids.is_empty() => {
                         log::info!("smart: retried {} pending meetings", ids.len());
                         for id in ids {
@@ -214,6 +262,16 @@ pub async fn api_smart_process_meeting<R: Runtime>(
 ) -> Result<usize, String> {
     let pool = pool(&app);
     process_meeting(&app, &pool, &meeting_id).await
+}
+
+/// Summary template for the meeting's category (standard if unfiled).
+#[tauri::command]
+pub async fn api_smart_template_for_meeting<R: Runtime>(
+    app: AppHandle<R>,
+    meeting_id: String,
+) -> Result<String, String> {
+    let category = meeting_placement(&pool(&app), &meeting_id).await?.category;
+    Ok(super::classify::template_for_category(category.as_deref()).to_string())
 }
 
 /// Folder picker for the Obsidian vault used by the glossary import.

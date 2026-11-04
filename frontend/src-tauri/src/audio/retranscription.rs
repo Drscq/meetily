@@ -122,6 +122,14 @@ pub async fn start_retranscription<R: Runtime>(
                     "language": res.language
                 }),
             );
+            // New raw text: correct, re-file and re-summarize it.
+            if let Some(state) = app.try_state::<AppState>() {
+                crate::smart::commands::spawn_process_meeting(
+                    app.clone(),
+                    state.db_manager.pool().clone(),
+                    res.meeting_id.clone(),
+                );
+            }
         }
         Err(e) => {
             let _ = app.emit(

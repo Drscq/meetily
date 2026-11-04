@@ -4,7 +4,9 @@
 use super::correction::{build_correction_prompt, parse_correction_response};
 #[cfg(test)]
 use super::correction::Segment;
-use super::classify::{build_classification_prompt, parse_classification_response, DEFAULT_CATEGORIES};
+use super::classify::{
+    build_classification_prompt, parse_classification_response, template_for_category, DEFAULT_CATEGORIES,
+};
 use super::glossary::Glossary;
 use super::organize::apply_classification;
 use super::transcript_versions::{apply_corrections, load_segments, Version};
@@ -22,6 +24,13 @@ use std::path::PathBuf;
 #[async_trait]
 pub trait ModelRunner: Send + Sync {
     async fn run(&self, prompt: &str) -> Result<String, String>;
+}
+
+/// The summary boundary: generates and stores a meeting summary from the
+/// (corrected) transcript using the given template.
+#[async_trait]
+pub trait SummaryGenerator: Send + Sync {
+    async fn generate(&self, meeting_id: &str, transcript: &str, template_id: &str) -> Result<(), String>;
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -120,6 +129,7 @@ pub async fn mark_undone(pool: &SqlitePool, meeting_id: &str) -> Result<(), Stri
 pub async fn process_meeting(
     pool: &SqlitePool,
     runner: &dyn ModelRunner,
+    summarizer: &dyn SummaryGenerator,
     meeting_id: &str,
     save_root: &Path,
 ) -> Result<CorrectionOutcome, String> {
@@ -128,9 +138,14 @@ pub async fn process_meeting(
         let outcome = run_correction(pool, runner, meeting_id)
             .await
             .map_err(|e| format!("Correction failed: {}", e))?;
-        run_classification(pool, runner, meeting_id, save_root)
+        let category = run_classification(pool, runner, meeting_id, save_root)
             .await
             .map_err(|e| format!("Classification failed: {}", e))?;
+        if let Some(category) = category {
+            run_summary(pool, summarizer, meeting_id, &category)
+                .await
+                .map_err(|e| format!("Summary failed: {}", e))?;
+        }
         Ok::<_, String>(outcome)
     }
     .await;
@@ -168,17 +183,56 @@ async fn run_classification(
     runner: &dyn ModelRunner,
     meeting_id: &str,
     save_root: &Path,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let segments = load_segments(pool, meeting_id, Version::Corrected).await?;
     if segments.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let transcript = segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n");
     let categories = known_categories(pool).await?;
     let raw = runner.run(&build_classification_prompt(&transcript, &categories)).await?;
     let classification = parse_classification_response(&raw, &categories)?;
     apply_classification(pool, meeting_id, save_root, &classification).await?;
-    Ok(())
+    Ok(Some(classification.category))
+}
+
+/// Summarize the corrected transcript with the template for its category.
+async fn run_summary(
+    pool: &SqlitePool,
+    summarizer: &dyn SummaryGenerator,
+    meeting_id: &str,
+    category: &str,
+) -> Result<(), String> {
+    let transcript = timestamped_transcript(pool, meeting_id).await?;
+    summarizer
+        .generate(meeting_id, &transcript, template_for_category(Some(category)))
+        .await
+}
+
+/// "[mm:ss] text" lines, the same shape the UI sends for summaries.
+async fn timestamped_transcript(pool: &SqlitePool, meeting_id: &str) -> Result<String, String> {
+    let rows: Vec<(String, Option<f64>, String)> = sqlx::query_as(
+        "SELECT transcript, audio_start_time, timestamp FROM transcripts
+         WHERE meeting_id = ? ORDER BY audio_start_time ASC",
+    )
+    .bind(meeting_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("Failed to load transcript: {}", e))?;
+    Ok(rows
+        .into_iter()
+        .map(|(text, start, timestamp)| {
+            let time = match start {
+                Some(secs) => {
+                    let secs = secs.max(0.0) as u64;
+                    format!("[{:02}:{:02}]", secs / 60, secs % 60)
+                }
+                None => timestamp,
+            };
+            format!("{} {}", time, text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 /// Re-run the pipeline for "pending" meetings (and ones stuck "processing"
@@ -188,6 +242,7 @@ async fn run_classification(
 pub async fn retry_pending(
     pool: &SqlitePool,
     runner: &dyn ModelRunner,
+    summarizer: &dyn SummaryGenerator,
     save_root: &Path,
     max_attempts: i64,
 ) -> Result<Vec<String>, String> {
@@ -206,7 +261,7 @@ pub async fn retry_pending(
 
     let mut retried = Vec::new();
     for (id,) in ids {
-        let _ = process_meeting(pool, runner, &id, save_root).await;
+        let _ = process_meeting(pool, runner, summarizer, &id, save_root).await;
         retried.push(id);
     }
     Ok(retried)
@@ -263,6 +318,32 @@ mod tests {
             prompts.push(prompt.to_string());
             let i = (prompts.len() - 1).min(self.replies.len() - 1);
             self.replies[i].clone()
+        }
+    }
+
+    /// Fake summary service: records each call and returns a fixed result.
+    struct FakeSummarizer {
+        reply: Result<(), String>,
+        calls: Mutex<Vec<(String, String, String)>>,
+    }
+
+    impl FakeSummarizer {
+        fn ok() -> Self {
+            Self { reply: Ok(()), calls: Mutex::new(vec![]) }
+        }
+        fn failing(e: &str) -> Self {
+            Self { reply: Err(e.to_string()), calls: Mutex::new(vec![]) }
+        }
+        fn calls(&self) -> Vec<(String, String, String)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl SummaryGenerator for FakeSummarizer {
+        async fn generate(&self, meeting_id: &str, transcript: &str, template_id: &str) -> Result<(), String> {
+            self.calls.lock().unwrap().push((meeting_id.into(), transcript.into(), template_id.into()));
+            self.reply.clone()
         }
     }
 
@@ -346,7 +427,7 @@ mod tests {
         recorded_meeting(&pool, root.path(), "m1").await;
         let runner = FakeRunner::script(vec![Ok(CORRECTION), Ok(CLASSIFICATION)]);
 
-        process_meeting(&pool, &runner, "m1", root.path()).await.unwrap();
+        process_meeting(&pool, &runner, &FakeSummarizer::ok(), "m1", root.path()).await.unwrap();
 
         let segs = load_segments(&pool, "m1", Version::Corrected).await.unwrap();
         assert_eq!(texts(segs), vec!["Thang Hoang reviewed MATTER"]);
@@ -366,7 +447,7 @@ mod tests {
         let folder = recorded_meeting(&pool, root.path(), "m1").await;
         let runner = FakeRunner::script(vec![Ok(CORRECTION), Err("codex: network down")]);
 
-        assert!(process_meeting(&pool, &runner, "m1", root.path()).await.is_err());
+        assert!(process_meeting(&pool, &runner, &FakeSummarizer::ok(), "m1", root.path()).await.is_err());
 
         let segs = load_segments(&pool, "m1", Version::Corrected).await.unwrap();
         assert_eq!(texts(segs), vec!["Thang Hoang reviewed MATTER"]);
@@ -384,18 +465,94 @@ mod tests {
             recorded_meeting(&pool, root.path(), id).await;
         }
         let failing = FakeRunner::replying(Err("offline"));
-        let _ = process_meeting(&pool, &failing, "pending", root.path()).await;
+        let _ = process_meeting(&pool, &failing, &FakeSummarizer::ok(), "pending", root.path()).await;
         for _ in 0..3 {
-            let _ = process_meeting(&pool, &failing, "exhausted", root.path()).await;
+            let _ = process_meeting(&pool, &failing, &FakeSummarizer::ok(), "exhausted", root.path()).await;
         }
         let ok = FakeRunner::script(vec![Ok(CORRECTION), Ok(CLASSIFICATION)]);
-        process_meeting(&pool, &ok, "done", root.path()).await.unwrap();
+        process_meeting(&pool, &ok, &FakeSummarizer::ok(), "done", root.path()).await.unwrap();
 
         let runner = FakeRunner::script(vec![Ok(CORRECTION), Ok(CLASSIFICATION)]);
-        let retried = retry_pending(&pool, &runner, root.path(), 3).await.unwrap();
+        let retried = retry_pending(&pool, &runner, &FakeSummarizer::ok(), root.path(), 3).await.unwrap();
 
         assert_eq!(retried, vec!["pending".to_string()]);
         assert_eq!(processing_status(&pool, "pending").await.unwrap().unwrap().status, "done");
         assert_eq!(processing_status(&pool, "exhausted").await.unwrap().unwrap().status, "pending");
+    }
+
+    #[tokio::test]
+    async fn summary_runs_last_on_corrected_text_with_the_category_template() {
+        let pool = migrated_pool().await;
+        let root = tempfile::tempdir().unwrap();
+        recorded_meeting(&pool, root.path(), "m1").await;
+        let runner = FakeRunner::script(vec![Ok(CORRECTION), Ok(CLASSIFICATION)]);
+        let summarizer = FakeSummarizer::ok();
+
+        process_meeting(&pool, &runner, &summarizer, "m1", root.path()).await.unwrap();
+
+        assert_eq!(
+            summarizer.calls(),
+            vec![("m1".into(), "[00:00] Thang Hoang reviewed MATTER".into(), "group_meeting".into())]
+        );
+        assert_eq!(processing_status(&pool, "m1").await.unwrap().unwrap().status, "done");
+    }
+
+    #[tokio::test]
+    async fn failed_summary_keeps_filing_and_marks_pending() {
+        let pool = migrated_pool().await;
+        let root = tempfile::tempdir().unwrap();
+        recorded_meeting(&pool, root.path(), "m1").await;
+        let runner = FakeRunner::script(vec![Ok(CORRECTION), Ok(CLASSIFICATION)]);
+
+        let result = process_meeting(&pool, &runner, &FakeSummarizer::failing("cli timed out"), "m1", root.path()).await;
+
+        assert!(result.is_err());
+        assert!(root.path().join("组会").join("2026-11-04 MATTER Review").is_dir(), "filing kept");
+        assert_eq!(meeting_placement(&pool, "m1").await.unwrap().title, "MATTER Review");
+        let status = processing_status(&pool, "m1").await.unwrap().unwrap();
+        assert_eq!(status.status, "pending");
+        assert!(status.error.unwrap().contains("Summary failed: cli timed out"));
+    }
+
+    #[tokio::test]
+    async fn failed_classification_does_not_summarize() {
+        let pool = migrated_pool().await;
+        let root = tempfile::tempdir().unwrap();
+        recorded_meeting(&pool, root.path(), "m1").await;
+        let runner = FakeRunner::script(vec![Ok(CORRECTION), Err("offline")]);
+        let summarizer = FakeSummarizer::ok();
+
+        let _ = process_meeting(&pool, &runner, &summarizer, "m1", root.path()).await;
+
+        assert!(summarizer.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rerun_after_retranscription_corrects_the_new_text_and_keeps_a_manual_title() {
+        let pool = migrated_pool().await;
+        let root = tempfile::tempdir().unwrap();
+        recorded_meeting(&pool, root.path(), "m1").await;
+        let first = FakeRunner::script(vec![Ok(CORRECTION), Ok(CLASSIFICATION)]);
+        process_meeting(&pool, &first, &FakeSummarizer::ok(), "m1", root.path()).await.unwrap();
+        crate::database::repositories::meeting::MeetingsRepository::update_meeting_title(&pool, "m1", "Thang 1:1")
+            .await
+            .unwrap();
+        // Retranscription replaces every row with fresh ASR output.
+        sqlx::query("DELETE FROM transcripts WHERE meeting_id = 'm1'").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time) VALUES ('r1', 'm1', 'fang huang on matter', '00:00', 0)")
+            .execute(&pool).await.unwrap();
+        let second = FakeRunner::script(vec![
+            Ok(r#"{"corrections": [{"id": "r1", "text": "Thang Hoang on MATTER"}], "new_terms": []}"#),
+            Ok(r#"{"title": "Another Title", "category": "组会"}"#),
+        ]);
+        let summarizer = FakeSummarizer::ok();
+
+        process_meeting(&pool, &second, &summarizer, "m1", root.path()).await.unwrap();
+
+        assert!(second.prompts.lock().unwrap()[0].contains("fang huang on matter"), "corrects new raw text");
+        let original = load_segments(&pool, "m1", Version::Original).await.unwrap();
+        assert_eq!(texts(original), vec!["fang huang on matter"]);
+        assert_eq!(meeting_placement(&pool, "m1").await.unwrap().title, "Thang 1:1");
+        assert_eq!(summarizer.calls()[0].1, "[00:00] Thang Hoang on MATTER");
     }
 }

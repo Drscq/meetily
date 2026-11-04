@@ -1,0 +1,32 @@
+{
+  "name": "Interview (面试)",
+  "description": "Interview record: questions asked, answers given, and an assessment.",
+  "sections": [
+    {
+      "title": "Summary",
+      "instruction": "Give a one-paragraph overview: who was interviewed for what role or program, and the overall impression.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Questions and Answers",
+      "instruction": "List each substantive question asked and a concise summary of the answer given, in order.",
+      "format": "list",
+      "item_format": "| Question | Answer Summary | Segment Time stamp |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Strengths",
+      "instruction": "List strengths demonstrated during the interview, with evidence from the transcript.",
+      "format": "list"
+    },
+    {
+      "title": "Concerns",
+      "instruction": "List weaknesses, gaps, or open concerns, with evidence from the transcript.",
+      "format": "list"
+    },
+    {
+      "title": "Follow-ups",
+      "instruction": "List next steps: follow-up questions, materials to send, decisions pending, and their owners.",
+      "format": "list"
+    }
+  ]
+}
