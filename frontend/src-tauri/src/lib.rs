@@ -850,7 +850,7 @@ pub fn run() {
             audio::import::cancel_import_command,
             audio::import::is_import_in_progress_command,
         ])
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
             match event {
@@ -884,4 +884,16 @@ pub fn run() {
                 _ => {}
             }
         });
+}
+
+/// Debug builds (`tauri dev`) use their own identifier, and so their own
+/// data folder, so testing never touches the installed app's meetings.
+fn app_context() -> tauri::Context<tauri::Wry> {
+    #[allow(unused_mut)]
+    let mut context = tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    {
+        context.config_mut().identifier = "com.meetily.ai.dev".to_string();
+    }
+    context
 }
