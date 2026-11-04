@@ -8,6 +8,7 @@ pub mod commands;
 pub mod correction;
 pub mod glossary;
 pub mod pipeline;
+pub mod transcript_md;
 pub mod transcript_versions;
 
 #[cfg(test)]

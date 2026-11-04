@@ -149,6 +149,10 @@ pub async fn process_meeting(
         Ok::<_, String>(outcome)
     }
     .await;
+    // Whatever succeeded, refresh the Markdown copy in the meeting folder.
+    if let Err(e) = super::transcript_md::write_for_meeting(pool, meeting_id).await {
+        log::warn!("smart::pipeline: {} for {}", e, meeting_id);
+    }
     match result {
         Ok(outcome) => {
             set_status(pool, meeting_id, "done", None).await?;
@@ -554,5 +558,33 @@ mod tests {
         assert_eq!(texts(original), vec!["fang huang on matter"]);
         assert_eq!(meeting_placement(&pool, "m1").await.unwrap().title, "Thang 1:1");
         assert_eq!(summarizer.calls()[0].1, "[00:00] Thang Hoang on MATTER");
+    }
+
+    #[tokio::test]
+    async fn filed_folder_gets_a_markdown_transcript_of_the_corrected_text() {
+        let pool = migrated_pool().await;
+        let root = tempfile::tempdir().unwrap();
+        recorded_meeting(&pool, root.path(), "m1").await;
+        let runner = FakeRunner::script(vec![Ok(CORRECTION), Ok(CLASSIFICATION)]);
+
+        process_meeting(&pool, &runner, &FakeSummarizer::ok(), "m1", root.path()).await.unwrap();
+
+        let md = std::fs::read_to_string(root.path().join("组会/2026-11-04 MATTER Review/transcript.md")).unwrap();
+        assert!(md.starts_with("# MATTER Review\n"), "{md}");
+        assert!(md.contains("- Category: 组会"), "{md}");
+        assert!(md.contains("**[00:00]** Thang Hoang reviewed MATTER"), "{md}");
+    }
+
+    #[tokio::test]
+    async fn markdown_transcript_is_written_even_when_a_later_step_fails() {
+        let pool = migrated_pool().await;
+        let root = tempfile::tempdir().unwrap();
+        let folder = recorded_meeting(&pool, root.path(), "m1").await;
+        let runner = FakeRunner::script(vec![Ok(CORRECTION), Err("offline")]);
+
+        let _ = process_meeting(&pool, &runner, &FakeSummarizer::ok(), "m1", root.path()).await;
+
+        let md = std::fs::read_to_string(folder.join("transcript.md")).unwrap();
+        assert!(md.contains("**[00:00]** Thang Hoang reviewed MATTER"), "{md}");
     }
 }

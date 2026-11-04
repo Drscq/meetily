@@ -252,6 +252,9 @@ pub async fn api_smart_undo_corrections<R: Runtime>(
     let pool = pool(&app);
     let restored = transcript_versions::undo_corrections(&pool, &meeting_id).await?;
     pipeline::mark_undone(&pool, &meeting_id).await?;
+    if let Err(e) = super::transcript_md::write_for_meeting(&pool, &meeting_id).await {
+        log::warn!("smart: {} for {}", e, meeting_id);
+    }
     Ok(restored)
 }
 

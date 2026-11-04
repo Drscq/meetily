@@ -37,7 +37,7 @@ pub async fn meeting_placement(
 }
 
 /// Local calendar date of a stored `created_at` timestamp.
-fn local_date(created_at: &str) -> String {
+pub(crate) fn local_date(created_at: &str) -> String {
     use chrono::{DateTime, Local, NaiveDateTime, Utc};
     let parsed = DateTime::parse_from_rfc3339(created_at)
         .map(|d| d.with_timezone(&Utc))
