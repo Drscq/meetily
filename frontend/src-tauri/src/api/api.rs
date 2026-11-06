@@ -742,7 +742,7 @@ pub async fn api_delete_api_key<R: Runtime>(
 
 #[tauri::command]
 pub async fn api_delete_meeting<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     meeting_id: String,
     auth_token: Option<String>,
@@ -755,12 +755,45 @@ pub async fn api_delete_meeting<R: Runtime>(
 
     let pool = state.db_manager.pool();
 
+    // Look up the meeting's folder before its row is gone.
+    let folder_path: Option<String> =
+        sqlx::query_scalar("SELECT folder_path FROM meetings WHERE id = ?")
+            .bind(&meeting_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
+
     match MeetingsRepository::delete_meeting(pool, &meeting_id).await {
         Ok(true) => {
             log_info!("Successfully deleted meeting {}", meeting_id);
+            // The database is the source of truth; a folder that cannot be
+            // removed is reported, not treated as a failed delete.
+            let mut folder_warning: Option<String> = None;
+            let mut folder_removed = false;
+            if let Some(folder) = folder_path.as_deref().filter(|f| !f.trim().is_empty()) {
+                let save_root = crate::audio::recording_preferences::load_recording_preferences(&app)
+                    .await
+                    .map(|p| p.save_folder)
+                    .unwrap_or_else(|_| crate::audio::recording_preferences::get_default_recordings_folder());
+                match super::meeting_files::trash_meeting_folder(std::path::Path::new(folder), &save_root) {
+                    Ok(Some(path)) => {
+                        folder_removed = true;
+                        log_info!("Moved meeting folder to Trash: {}", path.display());
+                    }
+                    Ok(None) => log_info!("Meeting folder already gone: {}", folder),
+                    Err(e) => {
+                        log_warn!("Kept meeting folder for {}: {}", meeting_id, e);
+                        folder_warning = Some(e);
+                    }
+                }
+            }
             Ok(serde_json::json!({
                 "status": "success",
-                "message": "Meeting deleted successfully"
+                "message": "Meeting deleted successfully",
+                "folder_removed": folder_removed,
+                "folder_warning": folder_warning,
             }))
         }
         Ok(false) => {

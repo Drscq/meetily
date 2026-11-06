@@ -326,7 +326,7 @@ const Sidebar: React.FC = () => {
 
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('api_delete_meeting', {
+      const result = await invoke<{ folder_removed?: boolean; folder_warning?: string | null }>('api_delete_meeting', {
         meetingId: itemId,
       });
       console.log('Meeting deleted successfully');
@@ -337,9 +337,17 @@ const Sidebar: React.FC = () => {
       Analytics.trackMeetingDeleted(itemId);
 
       // Show success toast
-      toast.success("Meeting deleted successfully", {
-        description: "All associated data has been removed"
-      });
+      if (result?.folder_warning) {
+        toast.warning("Meeting deleted, but its folder was kept", {
+          description: result.folder_warning
+        });
+      } else {
+        toast.success("Meeting deleted successfully", {
+          description: result?.folder_removed
+            ? "Its recording folder was moved to the Trash"
+            : "All associated data has been removed"
+        });
+      }
 
       // If deleting the active meeting, navigate to home
       if (currentMeeting?.id === itemId) {
@@ -823,7 +831,7 @@ const Sidebar: React.FC = () => {
       {/* Confirmation Modal for Delete */}
       <ConfirmationModal
         isOpen={deleteModalState.isOpen}
-        text="Are you sure you want to delete this meeting? This action cannot be undone."
+        text="Are you sure you want to delete this meeting? Its recording folder (audio, transcript and summary files) will be moved to the Trash."
         onConfirm={handleDeleteConfirm}
         onCancel={() => setDeleteModalState({ isOpen: false, itemId: null })}
       />
